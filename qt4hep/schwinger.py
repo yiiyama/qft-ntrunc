@@ -58,7 +58,7 @@ def get_h_elec(num_sites, position_indices, basis_change_matrix, l0):
     return h_elec
 
 
-def setup(num_sites, mu, l0):
+def setup(num_sites, mu, l0, sparse=True):
     print('Identifying Fock-space and position-space physical state indices')
     fock_indices, position_indices = get_basis_indices(num_sites)
     subdim = fock_indices.shape[0]
@@ -84,7 +84,8 @@ def setup(num_sites, mu, l0):
 
     print('Computing the electric Hamiltonian')
     h_elec = get_h_elec(num_sites, position_indices, basis_change_matrix, l0)
-    h_elec = BCOO.fromdense(h_elec)
+    if sparse:
+        h_elec = BCOO.fromdense(h_elec)
 
     return fock_indices, position_indices, site_num_op, basis_change_matrix, h_free, h_elec
 
