@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "qft-ntrunc"
+version = "0.0.1"
+authors = [
+  { name="Yutaro Iiyama", email="iiyama@icepp.s.u-tokyo.ac.jp" },
+]
+description = "Studies for QFT simulation with particle number truncation"
+readme = "README.md"
+requires-python = ">=3.12"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "numpy",
+    "scipy",
+    "jax[cuda12]",
+    "qiskit",
+    "qiskit-aer-gpu"
+]
+
+[project.urls]
+Homepage = "https://github.com/yiiyama/qft-ntrunc"
+Issues = "https://github.com/yiiyama/qft-ntrunc/issues"
