@@ -3,7 +3,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from qiskit.quantum_info import SparsePauliOp
 from jax.experimental.sparse import BCOO
-from qft_ntrunc.utils import cleaned
+from qft_ntrunc.utils import cleaned, dagger, simplify
 
 SIGMA_Z = np.diagflat([1.+0.j, -1.+0.j])
 SIGMA_PLUS = np.array([[0., 1.], [0., 0.]], dtype=np.complex128)
@@ -52,21 +52,6 @@ def get_rapidity(
     if with_wn:
         return rapidity, wavenumber
     return rapidity
-
-
-def dagger(op):
-    if isinstance(op, SparsePauliOp):
-        return op.adjoint()
-    return op.transpose(tuple(op.ndim - 2) + (op.ndim - 1, op.ndim - 2))
-
-
-def simplify(op):
-    if isinstance(op, SparsePauliOp):
-        return op.simplify()
-    if isinstance(op, BCOO):
-        return op.sum_duplicates()
-    op.eliminate_zeros()
-    return op
 
 
 def jw_annihilator_spo(num_sites):
