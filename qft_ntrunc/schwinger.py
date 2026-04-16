@@ -1,3 +1,4 @@
+"""Functions to construct the Schwinger model Hamiltonian."""
 from functools import partial
 import numpy as np
 from scipy.sparse import coo_array
@@ -11,16 +12,22 @@ jax.config.update('jax_enable_x64', True)
 
 @partial(jax.jit, static_argnums=[0])
 def get_basis_indices(num_sites):
+    """
+    Get the computational basis indices of zero-charge states in the Fock and position reps.
+    """
     half_lat = num_sites // 2
     hdim = 2 ** num_sites
+    # zero-charge subspace is N_C_(N/2) dim
     subdim = np.round(np.prod(np.arange(half_lat + 1, num_sites + 1) / np.arange(1, half_lat + 1)))
     subdim = int(subdim)
     binaries = (jnp.arange(hdim)[:, None] >> np.arange(num_sites)[None, :]) % 2
 
+    # In the Fock representation, first N/2 slots are for positrons
     sign = jnp.repeat(np.array([1, -1]), half_lat)
     charge = jnp.sum(binaries * sign[None, :], axis=1)
     fock_indices = jnp.nonzero(jnp.equal(charge, 0), size=subdim)[0]
 
+    # Position rep = staggered fermions
     total_excitations = jnp.sum(binaries, axis=1)
     position_indices = jnp.nonzero(jnp.equal(total_excitations, half_lat), size=subdim)[0]
 
@@ -29,6 +36,9 @@ def get_basis_indices(num_sites):
 
 @jax.jit
 def get_basis_change_matrix(site_num_op):
+    """
+    Return the 
+    """
     num_sites = site_num_op.shape[0]
     site_num_sum = bcoo_reduce_sum(site_num_op * (2 ** jnp.arange(num_sites))[:, None, None],
                                    axes=[0]).todense()
