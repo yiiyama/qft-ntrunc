@@ -5,9 +5,15 @@ from scipy.sparse import coo_array
 import jax
 import jax.numpy as jnp
 from jax.experimental.sparse import BCOO, bcoo_reduce_sum
-from .staggered_fermion import get_rapidity
-from .sparse import dagger, jw_annihilator_spo, ab_to_phi_sparse
-jax.config.update('jax_enable_x64', True)
+from qiskit.quantum_info import SparsePauliOp
+from .common import (
+    get_rapidity,
+    dagger,
+    jw_annihilator_spo,
+    ab_to_phi_sparse,
+    staggered_hopping_term_spo,
+    staggered_mass_term_spo
+)
 
 
 @partial(jax.jit, static_argnums=[0])
@@ -66,6 +72,27 @@ def get_h_elec(num_sites, position_indices, basis_change_matrix, l0):
     h_elec = jnp.einsum('h,ih,jh->ij', l2, basis_change_matrix, basis_change_matrix.conjugate())
     h_elec = jnp.where(jnp.isclose(h_elec, 0.), 0., h_elec)
     return h_elec
+
+
+def schwinger_interaction_term_spo(num_sites, coupling_j):
+    term = 0
+    for bound in range(1, num_sites):
+        paulis = ['I' * num_sites] * bound
+        coeffs = [0.5 * (1. - 2. * (isite % 2)) for isite in range(bound)]
+        op = SparsePauliOp(paulis, coeffs)
+        paulis = ['I' * (num_sites - isite - 1) + 'Z' + 'I' * isite for isite in range(bound)]
+        op += SparsePauliOp(paulis, 0.5)
+        term += coupling_j * (op @ op).simplify()
+
+    return term
+
+
+def schwinger_hamiltonian_spo(num_sites, lsp, mass, coupling_j, bc='periodic'):
+    hamiltonian = staggered_mass_term_spo(num_sites, mass)
+    hamiltonian += staggered_hopping_term_spo(num_sites, lsp, bc=bc)
+    if coupling_j != 0.:
+        hamiltonian += schwinger_interaction_term_spo(num_sites, coupling_j)
+    return hamiltonian.simplify()
 
 
 def setup(num_sites, mu, l0, sparse=True):
