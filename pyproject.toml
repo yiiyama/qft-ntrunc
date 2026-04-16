@@ -9,7 +9,6 @@ authors = [
   { name="Yutaro Iiyama", email="iiyama@icepp.s.u-tokyo.ac.jp" },
 ]
 description = "Studies for QFT simulation with particle number truncation"
-readme = "README.md"
 requires-python = ">=3.12"
 classifiers = [
     "Programming Language :: Python :: 3",
