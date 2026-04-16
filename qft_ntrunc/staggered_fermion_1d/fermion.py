@@ -5,6 +5,9 @@ from qiskit.quantum_info import SparsePauliOp
 from jax.experimental.sparse import BCOO
 from qft_ntrunc.utils import cleaned
 
+SIGMA_Z = np.diagflat([1.+0.j, -1.+0.j])
+SIGMA_PLUS = np.array([[0., 1.], [0., 0.]], dtype=np.complex128)
+
 
 def get_rapidity(
     num_sites: int,
@@ -85,10 +88,10 @@ def jw_annihilator_dense(num_sites):
         op = np.eye(2 ** num_sites, dtype=np.complex128).reshape((2,) * (2 * num_sites))
         for jsite in range(isite):
             dim = num_sites - jsite - 1
-            op = np.moveaxis(np.tensordot(sigma_z, op, (1, dim)), 0, dim)
+            op = np.moveaxis(np.tensordot(SIGMA_Z, op, (1, dim)), 0, dim)
         op *= (1.j) ** isite
         dim = num_sites - isite - 1
-        op = np.moveaxis(np.tensordot(sigma_plus, op, (1, dim)), 0, dim)
+        op = np.moveaxis(np.tensordot(SIGMA_PLUS, op, (1, dim)), 0, dim)
         ops[isite] = op.reshape((2 ** num_sites, 2 ** num_sites))
 
     return ops
