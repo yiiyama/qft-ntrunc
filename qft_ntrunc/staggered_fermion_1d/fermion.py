@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Any, Optional
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from qiskit.quantum_info import SparsePauliOp
@@ -54,7 +54,8 @@ def get_rapidity(
     return rapidity
 
 
-def jw_annihilator_spo(num_sites):
+def jw_annihilator_spo(num_sites: int) -> list[SparsePauliOp]:
+    r"""Jordan-Wigner representation of :math:`\Phi_n` implemented in SparsePauliOp."""
     ops = []
     for isite in range(num_sites):
         paulis = ['I' * (num_sites - isite - 1) + 'X' + 'Z' * isite]
@@ -67,7 +68,8 @@ def jw_annihilator_spo(num_sites):
     return ops
 
 
-def jw_annihilator_dense(num_sites):
+def jw_annihilator_dense(num_sites: int) -> list[np.ndarray]:
+    r"""Jordan-Wigner representation of :math:`\Phi_n` implemented in numpy."""
     ops = np.empty((num_sites, 2 ** num_sites, 2 ** num_sites), dtype=np.complex128)
     for isite in range(num_sites):
         op = np.eye(2 ** num_sites, dtype=np.complex128).reshape((2,) * (2 * num_sites))
@@ -82,7 +84,17 @@ def jw_annihilator_dense(num_sites):
     return ops
 
 
-def phi_to_ab_spo(phi, rapidity, wavenumber):
+def phi_to_ab_sparse(phi: list[Any], rapidity: NDArray, wavenumber: NDArray) -> list[Any]:
+    """Convert :math:`\Phi_n` to :math:`a_k` and :math:`b_k`.
+    
+    Args:
+        phi: List of sparse ops representing :math:`\Phi_n`.
+        rapidity: Rapidity array.
+        wavenumber: Wave number array.
+
+    Returns:
+        List :math:`[a_{-N/4}, \dots, a_{N/4-1}, b_{-N/4}, \dots, b_{N/4-1}]`
+    """
     num_sites = len(phi)
     half_lat = num_sites // 2
     twopii = 2.j * np.pi
@@ -102,7 +114,7 @@ def phi_to_ab_spo(phi, rapidity, wavenumber):
             for isite in range(num_sites):
                 field_op = phi[isite]
                 if ptype == 1:
-                    field_op = field_op.adjoint()
+                    field_op = dagger(field_op)
                 op += eikl[ik, isite // 2] * coeffs[ptype][isite % 2][ik] * field_op
                 op = op.simplify()
             op /= norm[ik]
@@ -111,7 +123,17 @@ def phi_to_ab_spo(phi, rapidity, wavenumber):
     return ops
 
 
-def phi_to_ab_dense(phi, rapidity, wavenumber, npmod=np):
+def phi_to_ab_dense(phi: NDArray, rapidity: NDArray, wavenumber: NDArray, npmod=np) -> np.ndarray:
+    """Convert :math:`\Phi_n` to :math:`a_k` and :math:`b_k`.
+    
+    Args:
+        phi: Array for :math:`\Phi_n`.
+        rapidity: Rapidity array.
+        wavenumber: Wave number array.
+
+    Returns:
+        Array :math:`[a_{-N/4}, \dots, a_{N/4-1}, b_{-N/4}, \dots, b_{N/4-1}]`
+    """
     aop = npmod.empty_like(phi)
     num_sites = phi.shape[0]
     half_lat = num_sites // 2
@@ -134,7 +156,8 @@ def phi_to_ab_dense(phi, rapidity, wavenumber, npmod=np):
     return cleaned(aop)
 
 
-def ab_to_phi_sparse(fock_ab, rapidity, wavenumber):
+def ab_to_phi_sparse(fock_ab: list[Any], rapidity: NDArray, wavenumber: NDArray) -> list[Any]:
+    """Convert particle / antiparticle annihilators to field ops."""
     num_sites = len(fock_ab)
     half_lat = num_sites // 2
     twopii = 2.j * np.pi
@@ -165,12 +188,13 @@ def ab_to_phi_sparse(fock_ab, rapidity, wavenumber):
 
 
 def ab_to_phi_dense(fock_ab, rapidity, wavenumber, npmod=np):
+    """Convert particle / antiparticle annihilators to field ops."""
     phi = npmod.empty_like(fock_ab)
     num_sites = fock_ab.shape[0]
     half_lat = num_sites // 2
 
     fock_a = fock_ab[:half_lat]
-    fock_bdag = dagger(fock_ab[half_lat:], npmod=npmod)
+    fock_bdag = dagger(fock_ab[half_lat:])
 
     twopii = 2.j * npmod.pi
     eikl = npmod.exp(twopii / half_lat * wavenumber[:, None] * npmod.arange(half_lat)[None, :])
