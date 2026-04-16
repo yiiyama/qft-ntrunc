@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 from jax.experimental.sparse import BCOO, bcoo_reduce_sum
 from qiskit.quantum_info import SparsePauliOp
-from .common import (
+from .fermion import (
     get_rapidity,
     dagger,
     jw_annihilator_spo,
