@@ -1,5 +1,6 @@
 """Functions to construct the Schwinger model Hamiltonian."""
 from functools import partial
+from typing import Any
 import numpy as np
 from scipy.sparse import coo_array
 import jax
@@ -12,77 +13,96 @@ from .fermion import (
     jw_annihilator_spo,
     ab_to_phi_sparse,
     staggered_hopping_term_spo,
-    staggered_mass_term_spo
+    staggered_mass_term_spo,
+    get_basis_indices,
+    get_basis_change_matrix
 )
+from qft_ntrunc.utils import clean_array, identity, simplify
 
 
-@partial(jax.jit, static_argnums=[0])
-def get_basis_indices(num_sites):
-    """
-    Get the computational basis indices of zero-charge states in the Fock and position reps.
-    """
-    half_lat = num_sites // 2
-    hdim = 2 ** num_sites
-    # zero-charge subspace is N_C_(N/2) dim
-    subdim = np.round(np.prod(np.arange(half_lat + 1, num_sites + 1) / np.arange(1, half_lat + 1)))
-    subdim = int(subdim)
-    binaries = (jnp.arange(hdim)[:, None] >> np.arange(num_sites)[None, :]) % 2
-
-    # In the Fock representation, first N/2 slots are for positrons
-    sign = jnp.repeat(np.array([1, -1]), half_lat)
-    charge = jnp.sum(binaries * sign[None, :], axis=1)
-    fock_indices = jnp.nonzero(jnp.equal(charge, 0), size=subdim)[0]
-
-    # Position rep = staggered fermions
-    total_excitations = jnp.sum(binaries, axis=1)
-    position_indices = jnp.nonzero(jnp.equal(total_excitations, half_lat), size=subdim)[0]
-
-    return fock_indices, position_indices
-
-
-@jax.jit
-def get_basis_change_matrix(site_num_op):
-    """
-    Return the 
-    """
-    num_sites = site_num_op.shape[0]
-    site_num_sum = bcoo_reduce_sum(site_num_op * (2 ** jnp.arange(num_sites))[:, None, None],
-                                   axes=[0]).todense()
-    return jnp.linalg.eigh(site_num_sum)[1]
-
-
-@partial(jax.jit, static_argnums=[0])
 def get_h_free(num_sites, fock_indices, mu):
+    """Return the free part of the Hamiltonian in Fock basis, projected onto the given indices."""
     rapidity = get_rapidity(num_sites, mu, npmod=jnp)
     binaries = (fock_indices[:, None] >> jnp.arange(num_sites)[None, :]) % 2
     energy = mu * jnp.cosh(rapidity)
     energy = jnp.tile(energy, 2)
     h_free = jnp.sum(energy[None, :] * binaries, axis=1)
-    h_free = jnp.where(jnp.isclose(h_free, 0.), 0., h_free)
+    clean_array(h_free, inplace=True)
     return h_free
 
 
-@partial(jax.jit, static_argnums=[0])
 def get_h_elec(num_sites, position_indices, basis_change_matrix, l0):
+    r"""Return the electric term of the Hamiltonian in Fock basis, projected onto the given position
+    indices.
+
+    Since we work in Gauss's law-solved space, :math:`L_n = \sum_{m=0}^{n} q_m + L_0`.
+    """
     half_lat = num_sites // 2
     binaries = (position_indices[:, None] >> jnp.arange(num_sites)[None, :]) % 2
     charge = jnp.tile(np.array([0, 1]), half_lat)[None, :] - binaries
     electric_config = jnp.cumsum(charge, axis=1) + l0
     l2 = jnp.sum(jnp.square(electric_config), axis=1)
     h_elec = jnp.einsum('h,ih,jh->ij', l2, basis_change_matrix, basis_change_matrix.conjugate())
-    h_elec = jnp.where(jnp.isclose(h_elec, 0.), 0., h_elec)
+    clean_array(h_elec, inplace=True)
     return h_elec
 
 
-def schwinger_interaction_term_spo(num_sites, coupling_j):
+def schwinger_electric_term_spo(
+    num_sites: int,
+    lin: int,
+    bc: str = 'periodic'
+) -> SparsePauliOp:
+    """Electric term of the Schwinger model Hamiltonian.
+
+    Args:
+        num_sites: Number of staggered sites (multiple of 2).
+        lin: Field value incident to site 0 (required if bc='periodic')
+        bc: Boundary condition ('periodic' or else).
+
+    Returns:
+        Electric term as a Pauli sum.
+    """
     term = 0
-    for bound in range(1, num_sites):
-        paulis = ['I' * num_sites] * bound
-        coeffs = [0.5 * (1. - 2. * (isite % 2)) for isite in range(bound)]
-        op = SparsePauliOp(paulis, coeffs)
-        paulis = ['I' * (num_sites - isite - 1) + 'Z' + 'I' * isite for isite in range(bound)]
-        op += SparsePauliOp(paulis, 0.5)
-        term += coupling_j * (op @ op).simplify()
+    field = SparsePauliOp('I' * num_sites, lin)
+    if bc == 'periodic':
+        # Assuming the operators act on the subspace with net charge 0
+        term += field @ field
+        smax = num_sites - 1
+    else:
+        smax = num_sites
+
+    for isite in range(smax):
+        paulis = ['I' * (num_sites - isite - 1) + 'Z' + 'I' * isite, 'I' * num_sites]
+        charge = SparsePauliOp(paulis, [-0.5, (0.5, -0.5)[isite % 2]])
+        field += charge
+        term += field @ field
+        term = term.simplify()
+
+    return term
+
+def schwinger_electric_term_sparse(
+    phi: list[Any],
+    lin: int,
+    bc: str = 'periodic',
+) -> Any:
+    """Electric term of the Schwinger model Hamiltonian from site annihilation operators."""
+    term = 0
+    ident = identity(phi[0])
+    field = lin * ident
+    if bc == 'periodic':
+        # Assuming the operators act on the subspace with net charge 0
+        term += field @ field
+        ops = phi[:-1]
+    else:
+        ops = phi
+
+    for isite, op in enumerate(ops):
+        charge = dagger(op) @ op
+        if isite % 2:
+            charge -= ident
+        field += charge
+        term += field @ field
+        term = simplify(term)
 
     return term
 
@@ -91,7 +111,7 @@ def schwinger_hamiltonian_spo(num_sites, lsp, mass, coupling_j, bc='periodic'):
     hamiltonian = staggered_mass_term_spo(num_sites, mass)
     hamiltonian += staggered_hopping_term_spo(num_sites, lsp, bc=bc)
     if coupling_j != 0.:
-        hamiltonian += schwinger_interaction_term_spo(num_sites, coupling_j)
+        hamiltonian += schwinger_electric_term_spo(num_sites, coupling_j)
     return hamiltonian.simplify()
 
 

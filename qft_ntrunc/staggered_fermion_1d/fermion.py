@@ -2,8 +2,9 @@ from typing import Any, Optional
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from qiskit.quantum_info import SparsePauliOp
-from jax.experimental.sparse import BCOO
-from qft_ntrunc.utils import cleaned, dagger, simplify
+import jax.numpy as jnp
+from jax.experimental.sparse import bcoo_reduce_sum
+from qft_ntrunc.utils import clean_array, dagger, simplify
 
 SIGMA_Z = np.diagflat([1.+0.j, -1.+0.j])
 SIGMA_PLUS = np.array([[0., 1.], [0., 0.]], dtype=np.complex128)
@@ -33,7 +34,7 @@ def get_rapidity(
     .. math::
 
         w_k = \sinh^{-1} \frac{p_k}{\mu}.
-    
+
     Args:
         num_sites: Number of sites.
         mu: Mass parameter.
@@ -55,7 +56,27 @@ def get_rapidity(
 
 
 def jw_annihilator_spo(num_sites: int) -> list[SparsePauliOp]:
-    r"""Jordan-Wigner representation of :math:`\Phi_n` implemented in SparsePauliOp."""
+    r"""Jordan-Wigner representation of a chain of annihilators.
+
+    As a convention, an annihilator :math:`A` acts as
+
+    .. math::
+
+        A \lvert 0 \rangle = 0 \\
+        A \lvert 1 \rangle = e^{i \theta} \lvert 0 \rangle
+
+    with :math:`\theta` some phase.
+
+    The annihilator is mapped to Pauli products via the Jordan-Wigner transformation
+
+    .. math::
+
+        \Phi_n = \prod_{l<n} (i Z_l) \sigma^{-}_n
+
+    with :math:`\sigma^{-} = 1/2 (X + iY)`.
+
+    Sites are indexed from right to left.
+    """
     ops = []
     for isite in range(num_sites):
         paulis = ['I' * (num_sites - isite - 1) + 'X' + 'Z' * isite]
@@ -85,8 +106,28 @@ def jw_annihilator_dense(num_sites: int) -> list[np.ndarray]:
 
 
 def phi_to_ab_sparse(phi: list[Any], rapidity: NDArray, wavenumber: NDArray) -> list[Any]:
-    """Convert :math:`\Phi_n` to :math:`a_k` and :math:`b_k`.
-    
+    r"""Convert :math:`\Phi_n` to :math:`a_k` and :math:`b_k`.
+
+    .. math::
+
+        \Phi_{2m} = \sqrt{\frac{2}{N}} \sum_{k} \frac{1}{\sqrt{\cosh w_k}}
+                  \left( e^{i \frac{2 \pi}{N} 2m k} \cosh \frac{w_k}{2} a_k
+                         + e^{-i \frac{2 \pi}{N} 2m k} \sinh \frac{w_k}{2} b^{\dagger}_k \right) \\
+        \Phi_{2m+1} = \sqrt{\frac{2}{N}} \sum_{k} \frac{1}{\sqrt{\cosh w_k}}
+                  \left( e^{i \frac{2 \pi}{N} (2m+1) k} \sinh \frac{w_k}{2} a_k
+                         + e^{-i \frac{2 \pi}{N} (2m+1) k} \cosh \frac{w_k}{2} b^{\dagger}_k \right)
+
+    Therefore
+
+        a_k = \frac{1}{\sqrt{M \cosh w_k}} \sum_{l=0}^{M-1} e^{-i\frac{2\pi}{M} kl} \left[
+                \cosh \frac{w_k}{2} \Phi_{2l}
+                + e^{-i \frac{2\pi}{N}k} \sinh \frac{w_k}{2} \Phi_{2l + 1}
+                \right], \\
+        b_k = \frac{1}{\sqrt{M \cosh w_k}} \sum_{l=0}^{M-1} e^{-i\frac{2\pi}{M} kl} \left[
+                \sinh \frac{w_k}{2} \hc{\Phi}_{2l}
+                + e^{-i \frac{2\pi}{N}k} \cosh \frac{w_k}{2} \hc{\Phi}_{2l + 1}
+                \right].
+
     Args:
         phi: List of sparse ops representing :math:`\Phi_n`.
         rapidity: Rapidity array.
@@ -116,16 +157,17 @@ def phi_to_ab_sparse(phi: list[Any], rapidity: NDArray, wavenumber: NDArray) -> 
                 if ptype == 1:
                     field_op = dagger(field_op)
                 op += eikl[ik, isite // 2] * coeffs[ptype][isite % 2][ik] * field_op
-                op = op.simplify()
+                op = simplify(op)
             op /= norm[ik]
+            clean_array(op.coeffs, inplace=True)
             ops.append(op)
 
     return ops
 
 
 def phi_to_ab_dense(phi: NDArray, rapidity: NDArray, wavenumber: NDArray, npmod=np) -> np.ndarray:
-    """Convert :math:`\Phi_n` to :math:`a_k` and :math:`b_k`.
-    
+    r"""Convert :math:`\Phi_n` to :math:`a_k` and :math:`b_k`.
+
     Args:
         phi: Array for :math:`\Phi_n`.
         rapidity: Rapidity array.
@@ -153,11 +195,29 @@ def phi_to_ab_dense(phi: NDArray, rapidity: NDArray, wavenumber: NDArray, npmod=
     summand = sinh * phidag[None, ::2] + phase_k * cosh * phidag[None, 1::2]
     aop[half_lat:] = npmod.sum(eikl * summand, axis=1) / norm
 
-    return cleaned(aop)
+    return clean_array(aop)
 
 
 def ab_to_phi_sparse(fock_ab: list[Any], rapidity: NDArray, wavenumber: NDArray) -> list[Any]:
-    """Convert particle / antiparticle annihilators to field ops."""
+    r"""Convert :math:`a_k` and :math:`b_k` to :math:`\Phi_n`.
+
+    .. math::
+
+        \Phi_{2m} = \sqrt{\frac{2}{N}} \sum_{k} \frac{1}{\sqrt{\cosh w_k}}
+                  \left( e^{i \frac{2 \pi}{N} 2m k} \cosh \frac{w_k}{2} a_k
+                         + e^{-i \frac{2 \pi}{N} 2m k} \sinh \frac{w_k}{2} b^{\dagger}_k \right) \\
+        \Phi_{2m+1} = \sqrt{\frac{2}{N}} \sum_{k} \frac{1}{\sqrt{\cosh w_k}}
+                  \left( e^{i \frac{2 \pi}{N} (2m+1) k} \sinh \frac{w_k}{2} a_k
+                         + e^{-i \frac{2 \pi}{N} (2m+1) k} \cosh \frac{w_k}{2} b^{\dagger}_k \right)
+
+    Args:
+        fock_ab: List of sparse ops representing :math:`a_k` and :math:`b_k`.
+        rapidity: Rapidity array.
+        wavenumber: Wave number array.
+
+    Returns:
+        List :math:`[\Phi_n]`.
+    """
     num_sites = len(fock_ab)
     half_lat = num_sites // 2
     twopii = 2.j * np.pi
@@ -178,17 +238,26 @@ def ab_to_phi_sparse(fock_ab: list[Any], rapidity: NDArray, wavenumber: NDArray)
         for ik in range(half_lat):
             a_op = fock_ab[ik]
             bdag_op = dagger(fock_ab[half_lat + ik])
-
             op += (eikl[ik] * a_coeffs[isite % 2][ik] * a_op
                    + eikl[ik].conjugate() * b_coeffs[isite % 2][ik] * bdag_op) / norm[ik]
             op = simplify(op)
+        clean_array(op.coeffs, inplace=True)
         ops.append(op)
 
     return ops
 
 
-def ab_to_phi_dense(fock_ab, rapidity, wavenumber, npmod=np):
-    """Convert particle / antiparticle annihilators to field ops."""
+def ab_to_phi_dense(fock_ab: NDArray, rapidity: NDArray, wavenumber: NDArray, npmod=np) -> NDArray:
+    r"""Convert :math:`a_k` and :math:`b_k` to :math:`\Phi_n`.
+
+    Args:
+        fock_ab: Array of ops representing :math:`a_k` and :math:`b_k`.
+        rapidity: Rapidity array.
+        wavenumber: Wave number array.
+
+    Returns:
+        Array :math:`[\Phi_n]`.
+    """
     phi = npmod.empty_like(fock_ab)
     num_sites = fock_ab.shape[0]
     half_lat = num_sites // 2
@@ -212,43 +281,91 @@ def ab_to_phi_dense(fock_ab, rapidity, wavenumber, npmod=np):
     summand += eikl.conjugate() * phase_k.conjugate() * cosh * fock_bdag[:, None, ...]
     phi[1::2] = npmod.sum(summand / norm, axis=0)
 
-    return cleaned(phi)
+    return clean_array(phi)
 
 
-def staggered_mass_term_spo(num_sites, mass):
+def staggered_mass_term_spo(num_sites: int) -> SparsePauliOp:
+    r"""Staggered mass Hamiltonian :math:`\sum_n (-)^n \Phi^{\dagger}_n \Phi_n`.
+
+    Our convention is that the even-indexed sites (indexed from right) represent positive charges
+    (:math:`\lvert 0 \rangle` is lower mass than :math:`\lvert 1 \rangle`).
+
+    Args:
+        num_sites: Number of staggered sites (multiple of 2).
+
+    Returns:
+        Mass term represented by a Pauli sum.
+    """
     paulis = ['I' * (num_sites - isite - 1) + 'Z' + 'I' * isite for isite in range(num_sites)]
-    coeffs = np.tile([-1., 1.], num_sites // 2) * 0.5 * mass
+    coeffs = np.tile([-1., 1.], num_sites // 2) * 0.5
     return SparsePauliOp(paulis, coeffs)
 
 
-def staggered_mass_term_dense(num_sites, mass):
+def staggered_mass_term_sparse(phi: list[Any]) -> Any:
+    """Staggered mass Hamiltonian constructed from a set of site annihilation operators."""
+    term = 0
+    for isite, op in enumerate(phi):
+        term += (1, -1)[isite % 2] * dagger(op) @ op
+    return simplify(term)
+
+
+def staggered_mass_term_dense(num_sites: int, npmod=np) -> NDArray:
+    r"""Staggered mass Hamiltonian :math:`\sum_n (-)^n \Phi^{\dagger}_n \Phi_n`."""
     phi = jw_annihilator_dense(num_sites)
     phidag = dagger(phi)
-    signs = np.expand_dims(np.tile([1., -1.], num_sites // 2), (-2, -1))
-    mass_term = np.sum(signs * mass * np.einsum('nij,njk->nik', phidag, phi), axis=0)
+    signs = npmod.expand_dims(npmod.tile([1., -1.], num_sites // 2), (-2, -1))
+    mass_term = npmod.sum(signs * npmod.einsum('nij,njk->nik', phidag, phi), axis=0)
     return mass_term
 
 
-def staggered_hopping_term_spo(num_sites, lsp, bc='periodic'):
-    param_w = 0.5 / lsp
+def staggered_hopping_term_spo(num_sites: int, bc: str = 'periodic') -> SparsePauliOp:
+    r"""Staggered hopping Hamiltonian.
+
+    .. math::
+
+        H_{\mathrm{hop}} = -i \sum_n (\Phi^{\dagger}_n \Phi_{n+1} - \mathrm{h.c.})
+
+    Args:
+        num_sites: Number of staggered sites (multiple of 2).
+        bc: Boundary condition ('periodic' or else).
+    Returns:
+        Hopping term represented by a Pauli sum.
+    """
     paulis = ['I' * (num_sites - isite - 2) + 'XX' + 'I' * isite for isite in range(num_sites - 1)]
-    coeffs = [0.5 * param_w] * (num_sites - 1)
+    coeffs = [0.5] * (num_sites - 1)
     if bc == 'periodic':
         paulis.append('X' + 'Z' * (num_sites - 2) + 'X')
-        coeffs.append((1 - 2 * ((num_sites // 2) % 2)) * 0.5 * param_w)
+        coeffs.append((1 - 2 * ((num_sites // 2) % 2)) * 0.5)
     term = SparsePauliOp(paulis, coeffs)
 
     paulis = ['I' * (num_sites - isite - 2) + 'YY' + 'I' * isite for isite in range(num_sites - 1)]
-    coeffs = [0.5 * param_w] * (num_sites - 1)
+    coeffs = [0.5] * (num_sites - 1)
     if bc == 'periodic':
         paulis.append('Y' + 'Z' * (num_sites - 2) + 'Y')
-        coeffs.append((1 - 2 * ((num_sites // 2) % 2)) * 0.5 * param_w)
+        coeffs.append((1 - 2 * ((num_sites // 2) % 2)) * 0.5)
     term += SparsePauliOp(paulis, coeffs)
 
-    return term
+    return term.simplify()
 
 
-def staggered_hopping_term_dense(num_sites, lsp, bc='periodic'):
+def staggered_hopping_term_sparse(phi: list[Any], bc: str = 'periodic') -> Any:
+    """Staggered hopping Hamiltonian constructed from a set of site annihilation operators."""
+    term = 0
+    for opl, opr in zip(phi[:-1], phi[1:]):
+        term += dagger(opl) @ opr
+    if bc == 'periodic':
+        term += dagger(phi[-1]) @ phi[0]
+    term *= -1.j
+    term += dagger(term)
+    return simplify(term)
+
+
+def staggered_hopping_term_dense(
+    num_sites: int,
+    bc: str = 'periodic',
+    npmod=np
+) -> NDArray:
+    """Staggered hopping Hamiltonian."""
     phi = jw_annihilator_dense(num_sites)
     phidag = dagger(phi)
     if bc == 'periodic':
@@ -257,6 +374,39 @@ def staggered_hopping_term_dense(num_sites, lsp, bc='periodic'):
         phidag = phidag[:-1]
         phi = phi[1:]
 
-    hopping_term = -0.5j / lsp * np.sum(np.einsum('nij,njk->nik', phidag, phi), axis=0)
+    hopping_term = -1.j * npmod.sum(npmod.einsum('nij,njk->nik', phidag, phi), axis=0)
     hopping_term += hopping_term.conjugate().T
     return hopping_term
+
+
+def get_basis_indices(num_sites):
+    """
+    Get the computational basis indices of zero-charge states in the Fock and position reps.
+    """
+    half_lat = num_sites // 2
+    hdim = 2 ** num_sites
+    # zero-charge subspace is N_C_(N/2) dim
+    subdim = np.round(np.prod(np.arange(half_lat + 1, num_sites + 1) / np.arange(1, half_lat + 1)))
+    subdim = int(subdim)
+    binaries = (jnp.arange(hdim)[:, None] >> np.arange(num_sites)[None, :]) % 2
+
+    # In the Fock representation, first N/2 slots are for positrons
+    sign = jnp.repeat(np.array([1, -1]), half_lat)
+    charge = jnp.sum(binaries * sign[None, :], axis=1)
+    fock_indices = jnp.nonzero(jnp.equal(charge, 0), size=subdim)[0]
+
+    # Position rep = staggered fermions
+    total_excitations = jnp.sum(binaries, axis=1)
+    position_indices = jnp.nonzero(jnp.equal(total_excitations, half_lat), size=subdim)[0]
+
+    return fock_indices, position_indices
+
+
+def get_basis_change_matrix(site_num_op):
+    """
+    Return the
+    """
+    num_sites = site_num_op.shape[0]
+    site_num_sum = bcoo_reduce_sum(site_num_op * (2 ** jnp.arange(num_sites))[:, None, None],
+                                   axes=[0]).todense()
+    return jnp.linalg.eigh(site_num_sum)[1]
