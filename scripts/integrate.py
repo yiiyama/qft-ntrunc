@@ -1,6 +1,7 @@
 import os
 from argparse import ArgumentParser
 from pathlib import Path
+import logging
 import numpy as np
 import h5py
 import jax
@@ -27,6 +28,8 @@ parser.add_argument('--truncate', type=int)
 parser.add_argument('--steps', type=int, default=100)
 parser.add_argument('--gpu')
 options = parser.parse_args()
+
+logging.basicConfig(level=logging.INFO)
 
 if options.gpu:
     os.environ['CUDA_VISIBLE_DEVICES'] = options.gpu
