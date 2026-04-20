@@ -13,7 +13,9 @@ from .fermion import (
     jw_annihilator_spo,
     ab_to_phi_sparse,
     staggered_hopping_term_spo,
+    staggered_hopping_term_sparse,
     staggered_mass_term_spo,
+    staggered_mass_term_sparse,
     get_basis_indices,
     get_basis_change_matrix
 )
@@ -49,10 +51,22 @@ def get_h_elec(num_sites, position_indices, basis_change_matrix, l0):
 
 def schwinger_electric_term_spo(
     num_sites: int,
-    lin: int,
+    lin: int = 0,
     bc: str = 'periodic'
 ) -> SparsePauliOp:
     """Electric term of the Schwinger model Hamiltonian.
+
+    .. math::
+
+        H_{\mathrm{elec}} = \frac{1}{2} \sum_{n} L_n^2
+
+    The sum runs from 0 to :math:`N-2` for open boundary, and to :math:`N-1` for periodic. The term
+    :math:`L_n` represents the electric field to the left of site :math:`n` (sites are indexed from
+    right to left). Since we work in Gauss's law-resolved space,
+
+    .. math::
+
+        L_n = L_{\mathrm{in}} + \sum_{m=0}^{n} Q_{m}.
 
     Args:
         num_sites: Number of staggered sites (multiple of 2).
@@ -78,11 +92,11 @@ def schwinger_electric_term_spo(
         term += field @ field
         term = term.simplify()
 
-    return term
+    return 0.5 * term
 
 def schwinger_electric_term_sparse(
     phi: list[Any],
-    lin: int,
+    lin: int = 0,
     bc: str = 'periodic',
 ) -> Any:
     """Electric term of the Schwinger model Hamiltonian from site annihilation operators."""
@@ -104,15 +118,40 @@ def schwinger_electric_term_sparse(
         term += field @ field
         term = simplify(term)
 
-    return term
+    return 0.5 * term
 
 
-def schwinger_hamiltonian_spo(num_sites, lsp, mass, coupling_j, bc='periodic'):
-    hamiltonian = staggered_mass_term_spo(num_sites, mass)
-    hamiltonian += staggered_hopping_term_spo(num_sites, lsp, bc=bc)
-    if coupling_j != 0.:
-        hamiltonian += schwinger_electric_term_spo(num_sites, coupling_j)
+def schwinger_hamiltonian_spo(
+    num_sites: int,
+    lsp: float,
+    mass: float,
+    coupling_g: float,
+    lin: int = 0,
+    bc: str = 'periodic'
+) -> SparsePauliOp:
+    hamiltonian = 1. / lsp * staggered_hopping_term_spo(num_sites, bc=bc)
+    if mass != 0.:
+        hamiltonian += mass * staggered_mass_term_spo(num_sites)
+    if coupling_g != 0.:
+        hamiltonian += np.square(coupling_g) * lsp * schwinger_electric_term_spo(num_sites, lin=lin,
+                                                                                 bc=bc)
     return hamiltonian.simplify()
+
+
+def schwinger_hamiltonian_sparse(
+    phi: list[Any],
+    lsp: float,
+    mass: float,
+    coupling_g: float,
+    lin: int = 0,
+    bc: str = 'periodic'
+) -> Any:
+    hamiltonian = 1. / lsp * staggered_hopping_term_sparse(phi, bc=bc)
+    if mass != 0.:
+        hamiltonian += mass * staggered_mass_term_sparse(phi)
+    if coupling_g != 0.:
+        hamiltonian += np.square(coupling_g) * lsp * schwinger_electric_term_sparse(phi, lin=lin, bc=bc)
+    return simplify(hamiltonian)
 
 
 def setup(num_sites, mu, l0, sparse=True):

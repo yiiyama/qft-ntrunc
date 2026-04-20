@@ -37,7 +37,7 @@ def get_rapidity(
 
     Args:
         num_sites: Number of sites.
-        mu: Mass parameter.
+        mu: Mass * lattice spacing.
         wavenumber: The wave number to compute the rapidity for. If None, set to all wave numbers.
         with_wn: Whether to return the wave number array in addition.
 
@@ -323,7 +323,7 @@ def staggered_hopping_term_spo(num_sites: int, bc: str = 'periodic') -> SparsePa
 
     .. math::
 
-        H_{\mathrm{hop}} = -i \sum_n (\Phi^{\dagger}_n \Phi_{n+1} - \mathrm{h.c.})
+        H_{\mathrm{hop}} = -i/2 \sum_n (\Phi^{\dagger}_n \Phi_{n+1} - \mathrm{h.c.})
 
     Args:
         num_sites: Number of staggered sites (multiple of 2).
@@ -355,7 +355,7 @@ def staggered_hopping_term_sparse(phi: list[Any], bc: str = 'periodic') -> Any:
         term += dagger(opl) @ opr
     if bc == 'periodic':
         term += dagger(phi[-1]) @ phi[0]
-    term *= -1.j
+    term *= -0.5j
     term += dagger(term)
     return simplify(term)
 

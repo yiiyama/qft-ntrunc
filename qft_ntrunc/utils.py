@@ -25,7 +25,9 @@ def dagger(op):
 
 def simplify(op):
     if isinstance(op, SparsePauliOp):
-        return op.simplify()
+        op = op.simplify()
+        clean_array(op._coeffs, inplace=True)
+        return op
     if isinstance(op, BCOO):
         return op.sum_duplicates()
     op.eliminate_zeros()
