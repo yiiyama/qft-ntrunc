@@ -7,17 +7,32 @@ from qiskit.quantum_info import Pauli, SparsePauliOp
 
 def apply_pauli(pauli: Pauli, state: jax.Array) -> jax.Array:
     nq = pauli.num_qubits
-    pauli_z = jnp.array([[[1.], [-1.]]], dtype=np.complex128)
-
     out = state
-    for isite, (x, z) in enumerate(zip(pauli.x, pauli.z)):
-        if not (x or z):
-            continue
-        out = jnp.reshape(out, (2 ** (nq - isite - 1), 2, 2 ** isite))
-        if x:
-            out = jnp.flip(out, 1)
-        if z:
-            out *= pauli_z
+    # Apply X and Z in contiguous blocks
+    for ptype, arr in [('x', pauli.x), ('z', pauli.z)]:
+        pos = np.nonzero(arr)[0]
+        if pos.shape[0]:
+            npos = np.nonzero(~arr)[0]
+            start = pos[0]
+            while True:
+                iend = np.searchsorted(npos, start)
+                if iend == npos.shape[0]:
+                    end = nq
+                else:
+                    end = npos[iend]
+                nsites = end - start
+                out = jnp.reshape(out, (2 ** (nq - nsites - start), 2 ** nsites, 2 ** start))
+                if ptype == 'x':
+                    out = jnp.flip(out, axis=1)
+                else:
+                    binary = (np.arange(2 ** nsites)[:, None] >> np.arange(nsites)[None, ::-1]) % 2
+                    signs = jnp.array([1, -1])[np.sum(binary, axis=1) % 2]
+                    out *= signs[None, :, None]
+                istart = np.searchsorted(pos, end)
+                if istart == pos.shape[0]:
+                    break
+                else:
+                    start = pos[istart]
 
     out = jnp.reshape(out, (-1,))
     if (iphase := np.count_nonzero(pauli.x & pauli.z) % 4) > 0:
