@@ -39,3 +39,13 @@ def identity(op):
         return SparsePauliOp('I' * op.num_qubits)
     # if isinstance(op, BCOO):
     #     return bcoo_eye
+
+
+def remove_identity(op):
+    if isinstance(op, SparsePauliOp):
+        new = 0
+        for term in op:
+            pauli = term.paulis[0]
+            if np.any(pauli.x | pauli.z):
+                new += term
+        return new
