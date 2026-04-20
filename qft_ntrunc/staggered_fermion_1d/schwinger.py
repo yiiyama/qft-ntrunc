@@ -166,7 +166,7 @@ def make_compressed_param_apply_h(
     truncation: tuple[str, int] | None = None
 ) -> Callable[[jax.Array, jax.Array, float], jax.Array]:
     hamiltonian = schwinger_hamiltonian_sparse(phi, lsp, mass, 0., lin=lin, bc=bc)
-    apply_hhop_hmass = make_apply_h(hamiltonian)
+    apply_hfree = make_apply_h(hamiltonian)
     apply_helec = make_apply_h(schwinger_electric_term_sparse(phi, lin=lin, bc=bc))
 
     @jax.jit
@@ -179,7 +179,7 @@ def make_compressed_param_apply_h(
 
         state = jnp.zeros((2 ** len(phi),), dtype=np.complex128)
         state = state.at[indices].set(compstate)
-        result = apply_hhop_hmass(state)[indices]
+        result = apply_hfree(state)[indices]
         result += jnp.square(coupling_g) * lsp * apply_helec(state)[indices]
 
         if truncation:
