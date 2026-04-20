@@ -42,14 +42,11 @@ def apply_pauli(pauli: Pauli, state: jax.Array) -> jax.Array:
 
 def make_apply_h(hamiltonian: SparsePauliOp) -> Callable[[jax.Array], jax.Array]:
     @jax.jit
-    def apply_h(state):
-        result = jnp.zeros_like(state)
-
+    def apply_h(state, result=None):
+        if result is None:
+            result = jnp.zeros_like(state)
         for pauli, coeff in zip(hamiltonian.paulis, hamiltonian.coeffs):
-            if not np.any(pauli.x | pauli.z):
-                continue
             result += coeff * apply_pauli(pauli, state)
-
         return result
 
     return apply_h

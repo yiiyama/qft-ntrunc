@@ -1,4 +1,5 @@
 """Functions to construct the Schwinger model Hamiltonian."""
+from collections.abc import Callable
 from functools import partial
 from typing import Any
 import numpy as np
@@ -7,7 +8,7 @@ import jax
 import jax.numpy as jnp
 from jax.experimental.sparse import BCOO, bcoo_reduce_sum
 from qiskit.quantum_info import SparsePauliOp
-from .fermion import (
+from qft_ntrunc.staggered_fermion_1d.fermion import (
     get_rapidity,
     dagger,
     jw_annihilator_spo,
@@ -19,6 +20,7 @@ from .fermion import (
     get_basis_indices,
     get_basis_change_matrix
 )
+from qft_ntrunc.paulis import make_apply_h
 from qft_ntrunc.utils import clean_array, identity, simplify
 
 
@@ -54,7 +56,7 @@ def schwinger_electric_term_spo(
     lin: int = 0,
     bc: str = 'periodic'
 ) -> SparsePauliOp:
-    """Electric term of the Schwinger model Hamiltonian.
+    r"""Electric term of the Schwinger model Hamiltonian.
 
     .. math::
 
@@ -153,6 +155,42 @@ def schwinger_hamiltonian_sparse(
     if coupling_g != 0.:
         hamiltonian += np.square(coupling_g) * lsp * schwinger_electric_term_sparse(phi, lin=lin, bc=bc)
     return simplify(hamiltonian)
+
+
+def make_compressed_param_apply_h(
+    phi: list[Any],
+    lsp: float,
+    mass: float,
+    lin: int = 0,
+    bc: str = 'periodic',
+    truncation: tuple[str, int] | None = None
+) -> Callable[[jax.Array, jax.Array, float], jax.Array]:
+    hamiltonian = schwinger_hamiltonian_sparse(phi, lsp, mass, 0., lin=lin, bc=bc)
+    apply_hhop_hmass = make_apply_h(hamiltonian)
+    apply_helec = make_apply_h(schwinger_electric_term_sparse(phi, lin=lin, bc=bc))
+
+    @jax.jit
+    def fn(compstate, indices, coupling_g):
+        if truncation:
+            if truncation[0] == 'fock_ab':
+                compstate *= jnp.less_equal(jnp.bitwise_count(indices), truncation[1])
+            else:
+                raise NotImplementedError('for later')
+
+        state = jnp.zeros((2 ** len(phi),), dtype=np.complex128)
+        state = state.at[indices].set(compstate)
+        result = apply_hhop_hmass(state)[indices]
+        result += jnp.square(coupling_g) * lsp * apply_helec(state)[indices]
+
+        if truncation:
+            if truncation[0] == 'fock_ab':
+                result *= jnp.less_equal(jnp.bitwise_count(indices), truncation[1])
+            else:
+                raise NotImplementedError('for later')
+
+        return result
+
+    return fn
 
 
 def setup(num_sites, mu, l0, sparse=True):

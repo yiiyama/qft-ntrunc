@@ -1,7 +1,9 @@
 from typing import Any, Optional
+from functools import partial
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from qiskit.quantum_info import SparsePauliOp
+import jax
 import jax.numpy as jnp
 from jax.experimental.sparse import bcoo_reduce_sum
 from qft_ntrunc.utils import clean_array, dagger, simplify
@@ -385,7 +387,8 @@ def staggered_hopping_term_dense(
     return hopping_term
 
 
-def get_basis_indices(num_sites):
+@partial(jax.jit, static_argnames=['num_sites', 'basis'])
+def get_basis_indices(num_sites: int, basis: str = 'site_phi') -> jax.Array:
     """
     Get the computational basis indices of zero-charge states in the Fock and position reps.
     """
@@ -396,16 +399,17 @@ def get_basis_indices(num_sites):
     subdim = int(subdim)
     binaries = (jnp.arange(hdim)[:, None] >> np.arange(num_sites)[None, :]) % 2
 
-    # In the Fock representation, first N/2 slots are for positrons
-    sign = jnp.repeat(np.array([1, -1]), half_lat)
-    charge = jnp.sum(binaries * sign[None, :], axis=1)
-    fock_indices = jnp.nonzero(jnp.equal(charge, 0), size=subdim)[0]
+    if basis == 'fock_ab':
+        # In the Fock representation, first N/2 slots are for positrons
+        sign = jnp.repeat(np.array([1, -1]), half_lat)
+        charge = jnp.sum(binaries * sign[None, :], axis=1)
+        indices = jnp.nonzero(jnp.equal(charge, 0), size=subdim)[0]
+    else:
+        # Position rep = staggered fermions
+        total_excitations = jnp.sum(binaries, axis=1)
+        indices = jnp.nonzero(jnp.equal(total_excitations, half_lat), size=subdim)[0]
 
-    # Position rep = staggered fermions
-    total_excitations = jnp.sum(binaries, axis=1)
-    position_indices = jnp.nonzero(jnp.equal(total_excitations, half_lat), size=subdim)[0]
-
-    return fock_indices, position_indices
+    return indices
 
 
 def get_basis_change_matrix(site_num_op):
