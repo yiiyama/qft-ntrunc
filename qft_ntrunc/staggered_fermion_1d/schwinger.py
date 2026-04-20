@@ -115,6 +115,7 @@ def schwinger_electric_term_sparse(
         if isite % 2:
             charge -= ident
         field += charge
+        field = simplify(field)
         term += field @ field
         term = simplify(term)
 

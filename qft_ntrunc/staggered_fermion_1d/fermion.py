@@ -304,9 +304,13 @@ def staggered_mass_term_spo(num_sites: int) -> SparsePauliOp:
 def staggered_mass_term_sparse(phi: list[Any]) -> Any:
     """Staggered mass Hamiltonian constructed from a set of site annihilation operators."""
     term = 0
-    for isite, op in enumerate(phi):
-        term += (1, -1)[isite % 2] * dagger(op) @ op
-    return simplify(term)
+    for op in phi[::2]:
+        term += dagger(op) @ op
+        term = simplify(term)
+    for op in phi[1::2]:
+        term -= dagger(op) @ op
+        term = simplify(term)
+    return term
 
 
 def staggered_mass_term_dense(num_sites: int, npmod=np) -> NDArray:
@@ -353,8 +357,10 @@ def staggered_hopping_term_sparse(phi: list[Any], bc: str = 'periodic') -> Any:
     term = 0
     for opl, opr in zip(phi[:-1], phi[1:]):
         term += dagger(opl) @ opr
+        term = simplify(term)
     if bc == 'periodic':
         term += dagger(phi[-1]) @ phi[0]
+        term = simplify(term)
     term *= -0.5j
     term += dagger(term)
     return simplify(term)
