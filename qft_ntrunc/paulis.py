@@ -3,71 +3,62 @@ from functools import partial
 import numpy as np
 import jax
 import jax.numpy as jnp
-from qiskit.quantum_info import Pauli, SparsePauliOp
+from qiskit.quantum_info import SparsePauliOp
 
 
-@partial(jax.jit, static_argnames=['num_qubits'])
-def make_signs(num_qubits: int) -> jax.Array:
-    filt = jnp.array(1, dtype=np.uint8)
-    signs = (1 - 2 * (jnp.bitwise_count(jnp.arange(2 ** num_qubits)) & filt)).astype(np.complex128)
-    return signs[None, :, None]
+def make_apply_h(
+    hamiltonian: SparsePauliOp,
+    by_parts: bool = False
+) -> Callable[[jax.Array], jax.Array]:
+    """Make the apply_h function.
 
+    Pauli products are grouped by the X signature first.
+    out = X @ state
+    out = Z @ out * coeff * phase
+    """
+    xuniq, indices, counts = np.unique(hamiltonian.paulis.x, axis=0, return_inverse=True, return_counts=True)
 
-def apply_pauli(
-    pauli: Pauli,
-    state: jax.Array,
-    coeff: complex,
-    preset_signs: dict[int, jax.Array]
-) -> jax.Array:
-    nq = pauli.num_qubits
-    out = state
+    powers = 1 << np.arange(hamiltonian.num_qubits, dtype=np.int32)[None, :]
+    # X signatures are interpreted as a binaries and converted to integer masks
+    xmasks = np.sum(xuniq.astype(np.uint8) * powers, axis=1, dtype=np.int32)
+    # Do the same for the Z signatures. Also precompute the coeff * phase factors
+    shape = (xuniq.shape[0], np.max(counts))
+    zmasks = np.zeros(shape, dtype=np.int32)
+    coeffs = np.zeros(shape, dtype=np.complex128)
+    for ipat, xmask in enumerate(xmasks):
+        ipaulis = np.nonzero(indices == ipat)[0]
+        zpatterns = hamiltonian.paulis.z[ipaulis]
+        zm = np.sum(zpatterns.astype(np.int32) * powers, axis=1)
+        zmasks[ipat, :counts[ipat]] = zm
+        # Will multiply the entire op by (-i)^{n_zx}
+        phases = np.array([1., -1.j, -1., 1.j])[np.bitwise_count(xmask & zm) % 4]
+        coeffs[ipat, :counts[ipat]] = hamiltonian.coeffs[ipaulis] * phases
 
-    # Apply X and Z in contiguous blocks
-    for ptype, arr in [('x', pauli.x), ('z', pauli.z)]:
-        pos = np.nonzero(arr)[0]
-        if pos.shape[0] == 0:
-            continue
-        npos = np.nonzero(~arr)[0]
-        start = pos[0]
-        while True:
-            iend = np.searchsorted(npos, start)
-            if iend == npos.shape[0]:
-                end = nq
-            else:
-                end = npos[iend]
-            nsites = end - start
-            out = jnp.reshape(out, (2 ** (nq - nsites - start), 2 ** nsites, 2 ** start))
-            if ptype == 'x':
-                out = jnp.flip(out, axis=1)
-            else:
-                if (signs := preset_signs.get(nsites)) is None:
-                    signs = make_signs(nsites)
-                    preset_signs[nsites] = signs
-                out *= signs
-            istart = np.searchsorted(pos, end)
-            if istart == pos.shape[0]:
-                break
-            else:
-                start = pos[istart]
+    def apply_pauli(xm, zms, cs, cnt, iota, state):
+        idx = jnp.bitwise_xor(iota, xm)
+        xstate = state[idx]
 
-    out = jnp.reshape(out, (-1,))
-    out *= coeff * (1., -1.j, -1., 1.j)[np.count_nonzero(pauli.x & pauli.z) % 4]
-    return out
+        def add_diag(val):
+            ip, out = val
+            signs = 1. - 2. * (jnp.bitwise_count(iota & zms[ip]) & 1)
+            out += xstate * signs * cs[ip]
+            return (ip + 1, out)
 
+        return jax.lax.while_loop(
+            lambda val: jnp.less(val[0], cnt),
+            add_diag,
+            (0, jnp.zeros_like(xstate))
+        )[1]
 
-def make_apply_h(hamiltonian: SparsePauliOp) -> Callable[[jax.Array], jax.Array]:
     @jax.jit
-    def apply_h(state, result=None):
-        preset_signs = {
-            1: jnp.array([[[1.], [-1.]]], dtype=np.complex128),
-            2: jnp.array([[[1.], [-1.], [-1.], [1.]]], dtype=np.complex128),
-            3: jnp.array([[[1.], [-1.], [-1.], [1.],
-                          [-1.], [1.], [1.], [-1.]]], dtype=np.complex128)
-        }
-        if result is None:
-            result = jnp.zeros_like(state)
-        for pauli, coeff in zip(hamiltonian.paulis, hamiltonian.coeffs):
-            result += apply_pauli(pauli, state, coeff, preset_signs)
-        return result
+    def apply_h(xmasks, zmasks, coeffs, counts, state):
+        iota = jnp.arange(state.size, dtype=np.int32)
+        return jax.lax.fori_loop(
+            0, xmasks.shape[0],
+            lambda i, r: r + apply_pauli(xmasks[i], zmasks[i], coeffs[i], counts[i], iota, state),
+            jnp.zeros_like(state)
+        )
 
-    return apply_h
+    if by_parts:
+        return apply_h, xmasks, zmasks, coeffs, counts
+    return partial(apply_h, jnp.array(xmasks), jnp.array(zmasks), jnp.array(coeffs), jnp.array(counts))
