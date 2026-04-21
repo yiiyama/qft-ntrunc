@@ -12,17 +12,41 @@ SIGMA_Z = np.diagflat([1.+0.j, -1.+0.j])
 SIGMA_PLUS = np.array([[0., 1.], [0., 0.]], dtype=np.complex128)
 
 
+def get_wavenumbers(
+    num_sites: int
+) -> NDArray:
+    r"""Return an array of wave numbers.
+
+    The number of modes represented in a lattice of :math:`N` sites is :math:`N/2` due to staggering
+    of the fermion. Therefore, the wave number is
+
+    .. math::
+
+        k \in \{-N/4, \dots, N/4-1\}
+
+    if :math:`N/2` is even, and
+
+    .. math::
+
+        k \in \{-(N/2-1)/2, \dots, (N/2-1)/2\}
+
+    otherwise.
+    """
+    half_lat = num_sites // 2
+    if half_lat % 2 == 0:
+        min, max = -half_lat // 2, half_lat // 2
+    else:
+        min, max = -(half_lat - 1) // 2, (half_lat + 1) // 2
+    return np.arange(min, max)
+
+
 def get_rapidity(
     num_sites: int,
     mu: float,
     wavenumber: Optional[ArrayLike] = None,
-    with_wn: bool = False,
-    npmod=np
+    with_wn: bool = False
 ) -> NDArray | tuple[NDArray, NDArray]:
     r"""Return an array of rapidity values for each wave number.
-
-    The number of modes represented in a lattice of :math:`N` sites is :math:`N/2` due to staggering
-    of the fermion. Therefore, the wave number :math:`k \in \{-N/4, \dots, N/4-1\}`.
 
     We use a discretization convention where the momentum :math:`p_k` corresponding to wave number
     :math:`k` is
@@ -47,13 +71,9 @@ def get_rapidity(
         Array of rapidity values (and wave numbers if with_wn=True).
     """
     if wavenumber is None:
-        half_lat = num_sites // 2
-        if half_lat % 2 == 0:
-            wavenumber = npmod.arange(-half_lat // 2, half_lat // 2)
-        else:
-            wavenumber = npmod.arange(-(half_lat - 1) // 2, (half_lat + 1) // 2)
-    gamma_beta = npmod.sin(2 * npmod.pi / num_sites * wavenumber) / mu
-    rapidity = npmod.arcsinh(gamma_beta)
+        wavenumber = get_wavenumbers(num_sites)
+    gamma_beta = np.sin(2 * np.pi / num_sites * wavenumber) / mu
+    rapidity = np.arcsinh(gamma_beta)
 
     if with_wn:
         return rapidity, wavenumber
