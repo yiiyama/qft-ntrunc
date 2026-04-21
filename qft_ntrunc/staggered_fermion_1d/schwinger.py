@@ -166,8 +166,8 @@ def make_compressed_param_apply_h(
     truncation: tuple[str, int] | None = None
 ) -> Callable[[jax.Array, jax.Array, float], jax.Array]:
     hamiltonian = schwinger_hamiltonian_sparse(phi, lsp, mass, 0., lin=lin, bc=bc)
-    apply_hfree = make_apply_h(hamiltonian)
-    apply_helec = make_apply_h(schwinger_electric_term_sparse(phi, lin=lin, bc=bc))
+    apply_hfree = make_apply_h(hamiltonian, multiplexing=16)
+    apply_helec = make_apply_h(schwinger_electric_term_sparse(phi, lin=lin, bc=bc), multiplexing=16)
 
     @jax.jit
     def fn(compstate, indices, coupling_g):
