@@ -8,6 +8,7 @@ from qiskit.quantum_info import SparsePauliOp
 
 def make_apply_h(
     hamiltonian: SparsePauliOp,
+    multiplexing: int = 1,
     by_parts: bool = False
 ) -> Callable[[jax.Array], jax.Array]:
     """Make the apply_h function.
@@ -38,11 +39,21 @@ def make_apply_h(
         idx = jnp.bitwise_xor(iota, xm)
         xstate = state[idx]
 
-        def add_diag(val):
-            ip, out = val
-            signs = 1. - 2. * (jnp.bitwise_count(iota & zms[ip]) & 1)
-            out += xstate * signs * cs[ip]
-            return (ip + 1, out)
+        if multiplexing == 1:
+            def add_diag(val):
+                ip, out = val
+                signs = 1. - 2. * (jnp.bitwise_count(iota & zms[ip]) & 1)
+                out += xstate * signs * cs[ip]
+                return (ip + 1, out)
+        else:
+            def add_diag(val):
+                ip, out = val
+                idx = ip + jnp.arange(multiplexing)
+                zmslice = zms.at[idx].get(mode='fill', fill_value=0)
+                signs = 1. - 2. * (jnp.bitwise_count(iota[None, :] & zmslice[:, None]) & 1)
+                cslice = cs.at[idx].get(mode='fill', fill_value=0.j)
+                out += jnp.sum(xstate[None, :] * signs * cslice[:, None], axis=0)
+                return (ip + multiplexing, out)
 
         return jax.lax.while_loop(
             lambda val: jnp.less(val[0], cnt),
