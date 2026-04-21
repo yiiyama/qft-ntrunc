@@ -1,29 +1,27 @@
-from collections.abc import Callable
 from functools import partial
+from typing import Optional
 import numpy as np
+from numpy.typing import NDArray
 import jax
 import jax.numpy as jnp
 from qiskit.quantum_info import SparsePauliOp
 
 
-def make_apply_h(
+def make_apply_h_args(
     hamiltonian: SparsePauliOp,
-    multiplexing: int = 1,
-    by_parts: bool = False
-) -> Callable[[jax.Array], jax.Array]:
-    """Make the apply_h function.
-
-    Pauli products are grouped by the X signature first.
-    out = X @ state
-    out = Z @ out * coeff * phase
-    """
-    xuniq, indices, counts = np.unique(hamiltonian.paulis.x, axis=0, return_inverse=True, return_counts=True)
+    width: Optional[int] = None
+) -> tuple[NDArray, NDArray, NDArray, NDArray]:
+    xuniq, indices, counts = np.unique(hamiltonian.paulis.x, axis=0, return_inverse=True,
+                                       return_counts=True)
+    if width is None:
+        width = np.max(counts)
+    assert width >= np.max(counts)
 
     powers = 1 << np.arange(hamiltonian.num_qubits, dtype=np.int32)[None, :]
     # X signatures are interpreted as a binaries and converted to integer masks
     xmasks = np.sum(xuniq.astype(np.uint8) * powers, axis=1, dtype=np.int32)
     # Do the same for the Z signatures. Also precompute the coeff * phase factors
-    shape = (xuniq.shape[0], np.max(counts))
+    shape = (xuniq.shape[0], width)
     zmasks = np.zeros(shape, dtype=np.int32)
     coeffs = np.zeros(shape, dtype=np.complex128)
     for ipat, xmask in enumerate(xmasks):
@@ -35,11 +33,18 @@ def make_apply_h(
         phases = np.array([1., -1.j, -1., 1.j])[np.bitwise_count(xmask & zm) % 4]
         coeffs[ipat, :counts[ipat]] = hamiltonian.coeffs[ipaulis] * phases
 
-    def apply_pauli(xm, zms, cs, cnt, iota, state):
+    return xmasks, zmasks, coeffs, counts
+
+
+@partial(jax.jit, static_argnames=['mult'])
+def apply_h(state, xmasks, zmasks, coeffs, counts, mult=1):
+    iota = jnp.arange(state.size, dtype=np.int32)
+
+    def apply_pauli(xm, zms, cs, cnt):
         idx = jnp.bitwise_xor(iota, xm)
         xstate = state[idx]
 
-        if multiplexing == 1:
+        if mult == 1:
             def add_diag(val):
                 ip, out = val
                 signs = 1. - 2. * (jnp.bitwise_count(iota & zms[ip]) & 1)
@@ -48,12 +53,12 @@ def make_apply_h(
         else:
             def add_diag(val):
                 ip, out = val
-                idx = ip + jnp.arange(multiplexing)
+                idx = ip + jnp.arange(mult)
                 zmslice = zms.at[idx].get(mode='fill', fill_value=0)
                 signs = 1. - 2. * (jnp.bitwise_count(iota[None, :] & zmslice[:, None]) & 1)
                 cslice = cs.at[idx].get(mode='fill', fill_value=0.j)
                 out += jnp.sum(xstate[None, :] * signs * cslice[:, None], axis=0)
-                return (ip + multiplexing, out)
+                return (ip + mult, out)
 
         return jax.lax.while_loop(
             lambda val: jnp.less(val[0], cnt),
@@ -61,15 +66,21 @@ def make_apply_h(
             (0, jnp.zeros_like(xstate))
         )[1]
 
-    @jax.jit
-    def apply_h(xmasks, zmasks, coeffs, counts, state):
-        iota = jnp.arange(state.size, dtype=np.int32)
-        return jax.lax.fori_loop(
-            0, xmasks.shape[0],
-            lambda i, r: r + apply_pauli(xmasks[i], zmasks[i], coeffs[i], counts[i], iota, state),
-            jnp.zeros_like(state)
-        )
+    return jax.lax.fori_loop(
+        0, xmasks.shape[0],
+        lambda i, r: r + apply_pauli(xmasks[i], zmasks[i], coeffs[i], counts[i]),
+        jnp.zeros_like(state)
+    )
 
-    if by_parts:
-        return apply_h, xmasks, zmasks, coeffs, counts
-    return partial(apply_h, jnp.array(xmasks), jnp.array(zmasks), jnp.array(coeffs), jnp.array(counts))
+
+@partial(jax.jit, static_argnames=['mult', 'basis'])
+def apply_h_truncated(state, xmasks, zmasks, coeffs, counts, basis, nmax, mult=1):
+    if basis == 'fock_ab':
+        npart = jnp.bitwise_count(jnp.arange(state.shape[0]))
+        projector = jnp.less_equal(npart, nmax)
+    else:
+        raise NotImplementedError('for later')
+
+    state *= projector
+    out = apply_h(state, xmasks, zmasks, coeffs, counts, mult=mult)
+    return out * projector
