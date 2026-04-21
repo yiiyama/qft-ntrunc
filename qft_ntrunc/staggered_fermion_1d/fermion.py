@@ -417,16 +417,20 @@ def _get_basis_indices(num_sites, basis, npmod=np):
     subdim = np.round(np.prod(np.arange(half_lat + 1, num_sites + 1) / np.arange(1, half_lat + 1)))
     subdim = int(subdim)
     binaries = (npmod.arange(hdim)[:, None] >> np.arange(num_sites)[None, :]) % 2
+    if npmod is np:
+        size_arg = {}
+    else:
+        size_arg = {'size': subdim}
 
     if basis == 'fock_ab':
         # In the Fock representation, first N/2 slots are for positrons
         sign = npmod.repeat(np.array([1, -1]), half_lat)
         charge = npmod.sum(binaries * sign[None, :], axis=1)
-        indices = npmod.nonzero(npmod.equal(charge, 0), size=subdim)[0]
+        indices = npmod.nonzero(npmod.equal(charge, 0), **size_arg)[0]
     else:
         # Position rep = staggered fermions
         total_excitations = npmod.sum(binaries, axis=1)
-        indices = npmod.nonzero(npmod.equal(total_excitations, half_lat), size=subdim)[0]
+        indices = npmod.nonzero(npmod.equal(total_excitations, half_lat), **size_arg)[0]
 
     return indices
 
@@ -444,13 +448,3 @@ def get_basis_indices(num_sites: int, basis: str = 'site_phi', npmod=np) -> NDAr
         return _get_basis_indices(num_sites, basis)
     if npmod is jnp:
         return _jit_get_basis_indices(num_sites, basis)
-
-
-def get_basis_change_matrix(site_num_op):
-    """
-    Return the
-    """
-    num_sites = site_num_op.shape[0]
-    site_num_sum = bcoo_reduce_sum(site_num_op * (2 ** jnp.arange(num_sites))[:, None, None],
-                                   axes=[0]).todense()
-    return jnp.linalg.eigh(site_num_sum)[1]
