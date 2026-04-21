@@ -48,7 +48,10 @@ def get_rapidity(
     """
     if wavenumber is None:
         half_lat = num_sites // 2
-        wavenumber = npmod.arange(-half_lat // 2, half_lat // 2)
+        if half_lat % 2 == 0:
+            wavenumber = npmod.arange(-half_lat // 2, half_lat // 2)
+        else:
+            wavenumber = npmod.arange(-(half_lat - 1) // 2, (half_lat + 1) // 2)
     gamma_beta = npmod.sin(2 * npmod.pi / num_sites * wavenumber) / mu
     rapidity = npmod.arcsinh(gamma_beta)
 
@@ -387,29 +390,40 @@ def staggered_hopping_term_dense(
     return hopping_term
 
 
-@partial(jax.jit, static_argnames=['num_sites', 'basis'])
-def get_basis_indices(num_sites: int, basis: str = 'site_phi') -> jax.Array:
-    """
-    Get the computational basis indices of zero-charge states in the Fock and position reps.
-    """
+def _get_basis_indices(num_sites, basis, npmod=np):
     half_lat = num_sites // 2
     hdim = 2 ** num_sites
     # zero-charge subspace is N_C_(N/2) dim
     subdim = np.round(np.prod(np.arange(half_lat + 1, num_sites + 1) / np.arange(1, half_lat + 1)))
     subdim = int(subdim)
-    binaries = (jnp.arange(hdim)[:, None] >> np.arange(num_sites)[None, :]) % 2
+    binaries = (npmod.arange(hdim)[:, None] >> np.arange(num_sites)[None, :]) % 2
 
     if basis == 'fock_ab':
         # In the Fock representation, first N/2 slots are for positrons
-        sign = jnp.repeat(np.array([1, -1]), half_lat)
-        charge = jnp.sum(binaries * sign[None, :], axis=1)
-        indices = jnp.nonzero(jnp.equal(charge, 0), size=subdim)[0]
+        sign = npmod.repeat(np.array([1, -1]), half_lat)
+        charge = npmod.sum(binaries * sign[None, :], axis=1)
+        indices = npmod.nonzero(npmod.equal(charge, 0), size=subdim)[0]
     else:
         # Position rep = staggered fermions
-        total_excitations = jnp.sum(binaries, axis=1)
-        indices = jnp.nonzero(jnp.equal(total_excitations, half_lat), size=subdim)[0]
+        total_excitations = npmod.sum(binaries, axis=1)
+        indices = npmod.nonzero(npmod.equal(total_excitations, half_lat), size=subdim)[0]
 
     return indices
+
+
+_jit_get_basis_indices = jax.jit(
+    partial(_get_basis_indices, npmod=jnp),
+    static_argnames=['num_sites', 'basis']
+)
+
+def get_basis_indices(num_sites: int, basis: str = 'site_phi', npmod=np) -> NDArray:
+    """
+    Get the computational basis indices of zero-charge states in the Fock and position reps.
+    """
+    if npmod is np:
+        return _get_basis_indices(num_sites, basis)
+    if npmod is jnp:
+        return _jit_get_basis_indices(num_sites, basis)
 
 
 def get_basis_change_matrix(site_num_op):
