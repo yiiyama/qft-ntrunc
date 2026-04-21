@@ -157,38 +157,57 @@ def schwinger_hamiltonian_sparse(
     return simplify(hamiltonian)
 
 
-def make_compressed_param_apply_h(
+def make_param_apply_h(
     phi: list[Any],
     lsp: float,
     mass: float,
     lin: int = 0,
     bc: str = 'periodic',
+    multiplexing: int = 16,
+    compressed: bool = False,
     truncation: tuple[str, int] | None = None
 ) -> Callable[[jax.Array, jax.Array, float], jax.Array]:
-    hamiltonian = schwinger_hamiltonian_sparse(phi, lsp, mass, 0., lin=lin, bc=bc)
-    apply_hfree = make_apply_h(hamiltonian, multiplexing=16)
-    apply_helec = make_apply_h(schwinger_electric_term_sparse(phi, lin=lin, bc=bc), multiplexing=16)
+    apply_hfree = make_apply_h(schwinger_hamiltonian_sparse(phi, lsp, mass, 0., lin=lin, bc=bc),
+                               multiplexing=multiplexing)
+    apply_helec = make_apply_h(schwinger_electric_term_sparse(phi, lin=lin, bc=bc),
+                               multiplexing=multiplexing)
 
     @jax.jit
-    def fn(compstate, indices, coupling_g):
+    def fn(state, coupling_g, indices=None):
         if truncation:
             if truncation[0] == 'fock_ab':
-                compstate *= jnp.less_equal(jnp.bitwise_count(indices), truncation[1])
+                if indices is None:
+                    nbits = jnp.bitwise_count(jnp.arange(state.shape[0]))
+                else:
+                    nbits = jnp.bitwise_count(indices)
+
+                projector = jnp.less_equal(nbits, truncation[1])
+                state *= projector
             else:
                 raise NotImplementedError('for later')
 
-        state = jnp.zeros((2 ** len(phi),), dtype=np.complex128)
-        state = state.at[indices].set(compstate)
-        result = apply_hfree(state)[indices]
-        result += jnp.square(coupling_g) * lsp * apply_helec(state)[indices]
+        if indices is None:
+            instate = state
+        else:
+            instate = jnp.zeros((2 ** len(phi),), dtype=np.complex128)
+            instate = instate.at[indices].set(state)
+
+        celec = jnp.square(coupling_g) * lsp
+        if indices is None:
+            result = apply_hfree(instate)
+            result += celec * apply_helec(instate)
+        else:
+            result = apply_hfree(instate)[indices]
+            result += celec * apply_helec(instate)[indices]
 
         if truncation:
-            if truncation[0] == 'fock_ab':
-                result *= jnp.less_equal(jnp.bitwise_count(indices), truncation[1])
-            else:
-                raise NotImplementedError('for later')
+            result *= projector
 
         return result
+
+    if compressed:
+        indices = get_basis_indices(len(phi), 'fock_ab', npmod=jnp)
+        return partial(fn, indices=indices)
 
     return fn
 
