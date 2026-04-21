@@ -1,6 +1,7 @@
 import os
 from argparse import ArgumentParser
 from pathlib import Path
+import time
 import logging
 import numpy as np
 import h5py
@@ -83,12 +84,18 @@ try:
 except FileExistsError:
     pass
 
+logging.info('Starting integration..')
+start_clock = time.time()
+
 with h5py.File(Path(options.out) / filename, 'w', libver='latest') as out:
     dataset = out.create_dataset('states', shape=(101, indices.shape[0]), dtype=np.complex128)
     state = vinit
     for start in range(0, 100, options.steps):
         states = integrate(state, dt * start)
+        logging.info('Integrated from %f to %f in %d steps. Elapsed time %f s', dt * start, dt * (start + options.steps + 1), options.steps, time.time() - start_clock)
         nst = min(options.steps, 101 - start)
         dataset[start:start + nst] = states[:nst]
         state = states[nst]
     dataset[-1] = state
+
+logging.info('Integration completed in %f s', time.time() - start_clock)
