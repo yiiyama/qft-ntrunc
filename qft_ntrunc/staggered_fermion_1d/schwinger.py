@@ -1,27 +1,18 @@
 """Functions to construct the Schwinger model Hamiltonian."""
 from collections.abc import Callable
-from functools import partial
 from typing import Any
 import numpy as np
-from scipy.sparse import coo_array
 import jax
-import jax.numpy as jnp
-from jax.experimental.sparse import BCOO, bcoo_reduce_sum
 from qiskit.quantum_info import SparsePauliOp
 from qft_ntrunc.staggered_fermion_1d.fermion import (
-    get_rapidity,
     dagger,
-    jw_annihilator_spo,
-    ab_to_phi_sparse,
     staggered_hopping_term_spo,
     staggered_hopping_term_sparse,
     staggered_mass_term_spo,
-    staggered_mass_term_sparse,
-    get_basis_indices,
-    get_basis_change_matrix
+    staggered_mass_term_sparse
 )
 from qft_ntrunc.paulis import make_apply_h_args
-from qft_ntrunc.utils import clean_array, identity, simplify
+from qft_ntrunc.utils import identity, simplify
 
 
 def schwinger_electric_term_spo(
