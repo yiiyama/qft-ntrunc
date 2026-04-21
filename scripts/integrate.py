@@ -26,6 +26,8 @@ parser.add_argument('--mass', type=float, required=True)
 parser.add_argument('--coupling', type=float, required=True)
 parser.add_argument('--truncate', type=int)
 parser.add_argument('--steps', type=int, default=100)
+parser.add_argument('--out', default='/data/iiyama/qft-ntrunk')
+parser.add_argument('--comp-cache')
 parser.add_argument('--gpu')
 options = parser.parse_args()
 
@@ -35,10 +37,11 @@ if options.gpu:
     os.environ['CUDA_VISIBLE_DEVICES'] = options.gpu
 
 jax.config.update('jax_enable_x64', True)
-jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache_iiyama")
-jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
-jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
-jax.config.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
+if options.comp_cache:
+    jax.config.update("jax_compilation_cache_dir", options.comp_cache)
+    jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+    jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+    jax.config.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
 
 fock_ab = jw_annihilator_spo(options.num_sites)
 rapidity, wavenumber = get_rapidity(options.num_sites, options.mass * options.lsp, with_wn=True)
@@ -75,7 +78,12 @@ filename = f'integrate_{options.num_sites}sites_a{options.lsp}_m{options.mass}_g
 if options.truncate:
     filename += f'_trunc{options.truncate}'
 filename += '.h5'
-with h5py.File(Path('/data/iiyama/qft-ntrunc') / filename, 'w', libver='latest') as out:
+try:
+    os.makedirs(options.out)
+except FileExistsError:
+    pass
+
+with h5py.File(Path(options.out) / filename, 'w', libver='latest') as out:
     dataset = out.create_dataset('states', shape=(101, indices.shape[0]), dtype=np.complex128)
     state = vinit
     for start in range(0, 100, options.steps):
