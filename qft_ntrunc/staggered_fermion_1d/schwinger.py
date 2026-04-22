@@ -126,13 +126,15 @@ def make_param_apply_h_args(
     phi: list[Any],
     lsp: float,
     mass: float,
+    coupling_g: float,
     lin: int = 0,
     bc: str = 'periodic',
     mesh: Optional[Mesh] = None
 ) -> Callable[[jax.Array, jax.Array, float], jax.Array]:
     """Return apply_h arguments with a separation between free and electric terms (entry 0 is free).
     """
-    args_elec = make_apply_h_args(schwinger_electric_term_sparse(phi, lin=lin, bc=bc))
+    helec = np.square(coupling_g) * lsp * schwinger_electric_term_sparse(phi, lin=lin, bc=bc)
+    args_elec = make_apply_h_args(helec)
     args_free = make_apply_h_args(schwinger_hamiltonian_sparse(phi, lsp, mass, 0., lin=lin, bc=bc),
                                   width=args_elec[1].shape[1])
     args = tuple(np.concatenate([f, e], axis=0) for f, e in zip(args_free, args_elec))

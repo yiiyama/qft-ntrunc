@@ -1,6 +1,7 @@
 import os
 import sys
 import re
+from functools import partial
 from argparse import ArgumentParser
 from pathlib import Path
 import time
@@ -22,42 +23,43 @@ from qft_ntrunc.staggered_fermion_1d.schwinger import make_param_apply_h_args
 from qft_ntrunc.paulis import apply_h, apply_h_truncated
 
 
-def make_dpsidt(num_sites, lsp, mass, coupling, profile, mult=1, nmax=None, mesh=None):
+def make_dpsidt(num_sites, lsp, mass, coupling_g, profile, mult=1, nmax=None, mesh=None):
     fock_ab = jw_annihilator_spo(num_sites)
     rapidity, wavenumber = get_rapidity(num_sites, mass * lsp, with_wn=True)
     phi = ab_to_phi_sparse(fock_ab, rapidity, wavenumber)
-    xmasks, zmasks, coeffs, counts = make_param_apply_h_args(phi, lsp, mass, mesh=mesh)
-    coupling_j = np.zeros(xmasks.shape[0])
-    coupling_j[1:] = (coupling ** 2) * lsp
+    xmasks, zmasks, coeffs, counts = make_param_apply_h_args(phi, lsp, mass, coupling_g, mesh=mesh)
+    scaler_mask = np.ones(xmasks.shape[0])
+    scaler_mask[0] = 0.
+    const_mask = np.zeros(xmasks.shape[0])
+    const_mask[0] = 1.
     if mesh:
-        coupling_j = jax.device_put(coupling_j, xmasks.device)
+        scaler_mask = jax.device_put(scaler_mask, xmasks.device)
+        const_mask = jax.device_put(const_mask, xmasks.device)
 
     if profile is None:
         # Run the simulation for +-3 sigma duration, with 1 sigma = 1/Emax
         sigma = 1. / (mass * np.cosh(rapidity[0]))
         tmax = 6. * sigma
-        prof_fn = gaus
-        prof_args = (tmax, sigma)
+        prof_fn = gaus(tmax, sigma)
     else:
         name, prof_args = parse_profile(profile)
         tmax = prof_args[0]
-        prof_fn = profile_fns[name]
+        prof_fn = profile_fns[name](*prof_args)
         logging.info('Using profile fn %s with args %s', name, prof_args)
 
     dt = tmax / 100
 
     @jax.jit
-    def dpsidt(state, tm, xmasks, zmasks, coeffs, counts, coupling_j, prof_args):
+    def dpsidt(state, tm, xmasks, zmasks, coeffs, counts, scaler_mask, const_mask):
         # Scale coeffs[1:] (electric terms)
-        coeffs *= coupling_j[:, None] * prof_fn(tm, *prof_args)
+        coeffs *= scaler_mask[:, None] * prof_fn(tm) + const_mask[:, None]
         if nmax is None:
             return -1.j * apply_h(state, xmasks, zmasks, coeffs, counts, mult=mult)
         return -1.j * apply_h_truncated(state, xmasks, zmasks, coeffs, counts, 'fock_ab', nmax,
                                         mult=mult)
 
     if mesh:
-        in_specs = (P(None), P(), P('x'), P('x', None), P('x', None), P('x'), P('x'))
-        in_specs += ((P(),) * len(prof_args),)
+        in_specs = (P(None), P(), P('x'), P('x', None), P('x', None), P('x'), P('x'), P('x'))
         dpsidt = jax.shard_map(
             dpsidt,
             mesh=mesh,
@@ -65,7 +67,7 @@ def make_dpsidt(num_sites, lsp, mass, coupling, profile, mult=1, nmax=None, mesh
             out_specs=P(None)
         )
 
-    return dpsidt, dt, (xmasks, zmasks, coeffs, counts, coupling_j, prof_args)
+    return dpsidt, dt, (xmasks, zmasks, coeffs, counts, scaler_mask, const_mask)
 
 
 def parse_profile(profile):
@@ -74,34 +76,46 @@ def parse_profile(profile):
     return match.group(1), args
 
 
-def gaus(t, tmax, sigma):
-    t0 = tmax * 0.5
-    return jnp.exp(-jnp.square((t - t0) / sigma))
+def gaus(tmax, sigma):
+    def fn(t):
+        t0 = tmax * 0.5
+        return jnp.exp(-jnp.square((t - t0) / sigma))
+
+    return fn
 
 
-def turnon(t, tmax, sigma):
-    t0 = tmax * 0.5
-    return jax.lax.select(
-        t < t0,
-        jnp.exp(-jnp.square((t - t0) / sigma)),
-        1.
-    )
+def turnon(tmax, sigma):
+    def fn(t):
+        t0 = tmax * 0.5
+        return jax.lax.select(
+            t < t0,
+            jnp.exp(-jnp.square((t - t0) / sigma)),
+            1.
+        )
+
+    return fn
 
 
-def erf(t, tmax, sigma):
-    t0 = tmax * 0.25
-    exponent = (t - t0) / sigma / np.sqrt(2.)
-    return 0.5 + 0.5 * jax.scipy.special.erf(exponent)
+def erf(tmax, sigma):
+    def fn(t):
+        t0 = tmax * 0.25
+        exponent = (t - t0) / sigma / np.sqrt(2.)
+        return 0.5 + 0.5 * jax.scipy.special.erf(exponent)
+
+    return fn
 
 
-def erfsymm(t, tmax, sigma):
-    t0 = tmax * 0.25
-    tcent = tmax * 0.5
-    right = jnp.asarray(t > tcent, dtype=np.float64)
-    sign = 1. - 2. * right
-    offset = tcent * right
-    exponent = (t - t0 - offset) * sign / sigma / np.sqrt(2.)
-    return 0.5 + 0.5 * jax.scipy.special.erf(exponent)
+def erfsymm(tmax, sigma):
+    def fn(t):
+        t0 = tmax * 0.25
+        tcent = tmax * 0.5
+        right = jnp.asarray(t > tcent, dtype=np.float64)
+        sign = 1. - 2. * right
+        offset = tcent * right
+        exponent = (t - t0 - offset) * sign / sigma / np.sqrt(2.)
+        return 0.5 + 0.5 * jax.scipy.special.erf(exponent)
+
+    return fn
 
 
 profile_fns = {'gaus': gaus, 'turnon': turnon, 'erf': erf}
