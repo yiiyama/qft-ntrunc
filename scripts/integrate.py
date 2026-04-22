@@ -83,6 +83,16 @@ def erf(t, tmax, sigma):
     return 0.5 + 0.5 * jax.scipy.special.erf(exponent)
 
 
+def erfsymm(t, tmax, sigma):
+    t0 = tmax * 0.25
+    tcent = tmax * 0.5
+    right = jnp.asarray(t > tcent, dtype=np.float64)
+    sign = 1. - 2. * right
+    offset = tcent * right
+    exponent = (t - t0 - offset) * sign / sigma / np.sqrt(2.)
+    return 0.5 + 0.5 * jax.scipy.special.erf(exponent)
+
+
 profile_fns = {'gaus': gaus, 'turnon': turnon, 'erf': erf}
 
 
