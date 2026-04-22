@@ -1,8 +1,9 @@
 """Functions to construct the Schwinger model Hamiltonian."""
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Optional
 import numpy as np
 import jax
+from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 from qiskit.quantum_info import SparsePauliOp
 from qft_ntrunc.staggered_fermion_1d.fermion import (
     dagger,
@@ -126,11 +127,20 @@ def make_param_apply_h_args(
     lsp: float,
     mass: float,
     lin: int = 0,
-    bc: str = 'periodic'
+    bc: str = 'periodic',
+    mesh: Optional[Mesh] = None
 ) -> Callable[[jax.Array, jax.Array, float], jax.Array]:
     """Return apply_h arguments with a separation between free and electric terms (entry 0 is free).
     """
     args_elec = make_apply_h_args(schwinger_electric_term_sparse(phi, lin=lin, bc=bc))
     args_free = make_apply_h_args(schwinger_hamiltonian_sparse(phi, lsp, mass, 0., lin=lin, bc=bc),
                                   width=args_elec[1].shape[1])
-    return tuple(np.concatenate([f, e], axis=0) for f, e in zip(args_free, args_elec))
+    args = tuple(np.concatenate([f, e], axis=0) for f, e in zip(args_free, args_elec))
+    if mesh is None:
+        return args
+
+    pad_len = mesh.shape['x'] - args[0].shape[0] % mesh.shape['x']
+    if pad_len:
+        args = tuple(np.pad(a, [(0, pad_len)]) for a in args)
+    sharding = NamedSharding(mesh, P('x'))
+    return tuple(jax.device_put(a, sharding) for a in args)

@@ -10,6 +10,7 @@ import h5py
 import jax
 import jax.numpy as jnp
 from jax.experimental.ode import odeint
+from jax.sharding import PartitionSpec as P, AxisType
 from qft_ntrunc.staggered_fermion_1d.fermion import (
     jw_annihilator_spo,
     get_wavenumbers,
@@ -21,11 +22,15 @@ from qft_ntrunc.staggered_fermion_1d.schwinger import make_param_apply_h_args
 from qft_ntrunc.paulis import apply_h, apply_h_truncated
 
 
-def make_dpsidt(num_sites, lsp, mass, coupling, profile, mult=1, nmax=None):
+def make_dpsidt(num_sites, lsp, mass, coupling, profile, mult=1, nmax=None, mesh=None):
     fock_ab = jw_annihilator_spo(num_sites)
     rapidity, wavenumber = get_rapidity(num_sites, mass * lsp, with_wn=True)
     phi = ab_to_phi_sparse(fock_ab, rapidity, wavenumber)
-    xmasks, zmasks, coeffs, counts = make_param_apply_h_args(phi, lsp, mass)
+    xmasks, zmasks, coeffs, counts = make_param_apply_h_args(phi, lsp, mass, mesh=mesh)
+    coupling_j = np.zeros(xmasks.shape[0])
+    coupling_j[1:] = (coupling ** 2) * lsp
+    if mesh:
+        coupling_j = jax.device_put(coupling_j, xmasks.device)
 
     if profile is None:
         # Run the simulation for +-3 sigma duration, with 1 sigma = 1/Emax
@@ -42,19 +47,25 @@ def make_dpsidt(num_sites, lsp, mass, coupling, profile, mult=1, nmax=None):
     dt = tmax / 100
 
     @jax.jit
-    def dpsidt(state, tm, args):
-        xmasks, zmasks, coeffs, counts, coupling_j = args[:5]
-        prof_args = args[5:]
-        g2lsp = coupling_j * prof_fn(tm, *prof_args)
+    def dpsidt(state, tm, xmasks, zmasks, coeffs, counts, coupling_j, prof_args):
         # Scale coeffs[1:] (electric terms)
-        coeffs *= jnp.where(jnp.arange(xmasks.shape[0]) == 0, 1., g2lsp)[:, None]
+        coeffs *= coupling_j[:, None] * prof_fn(tm, *prof_args)
         if nmax is None:
             return -1.j * apply_h(state, xmasks, zmasks, coeffs, counts, mult=mult)
         return -1.j * apply_h_truncated(state, xmasks, zmasks, coeffs, counts, 'fock_ab', nmax,
                                         mult=mult)
 
-    coupling_j = (coupling ** 2) * lsp
-    return dpsidt, dt, (xmasks, zmasks, coeffs, counts, coupling_j) + prof_args
+    if mesh:
+        in_specs = (P(None), P(), P('x'), P('x', None), P('x', None), P('x'), P('x'))
+        in_specs += ((P(),) * len(prof_args),)
+        dpsidt = jax.shard_map(
+            dpsidt,
+            mesh=mesh,
+            in_specs=in_specs,
+            out_specs=P(None)
+        )
+
+    return dpsidt, dt, (xmasks, zmasks, coeffs, counts, coupling_j, prof_args)
 
 
 def parse_profile(profile):
@@ -113,7 +124,7 @@ def make_vinit(num_sites, config):
 def profile_trace(dpsidt, dt, args, vinit, steps, trace_name):
     tpoints = np.linspace(0., dt * steps, steps + 1)
     with jax.profiler.trace(trace_name):
-        odeint(dpsidt, vinit, tpoints, args)
+        odeint(dpsidt, vinit, tpoints, *args)
 
 
 def integrate_and_write(dpsidt, dt, args, vinit, steps, out):
@@ -128,7 +139,7 @@ def integrate_and_write(dpsidt, dt, args, vinit, steps, out):
     for start in range(0, 100, steps):
         end = start + steps
         tpoints = np.linspace(dt * start, dt * end, steps + 1)
-        states = odeint(dpsidt, state, tpoints, args)
+        states = odeint(dpsidt, state, tpoints, *args)
         logging.info('Integrated from %f to %f in %d steps. Elapsed time %f s',
                      dt * start, dt * end, options.steps, time.time() - start_clock)
         nout = min(steps, 101 - start)
@@ -158,8 +169,12 @@ if __name__ == '__main__':
 
     logging.basicConfig(level=logging.INFO)
 
+    mesh = None
     if options.gpu:
         os.environ['CUDA_VISIBLE_DEVICES'] = options.gpu
+        if (ndev := len(options.gpu.split(','))) > 1:
+            mesh = jax.make_mesh((ndev,), ('x',), (AxisType.Explicit,))
+
     jax.config.update('jax_enable_x64', True)
     if options.comp_cache:
         jax.config.update("jax_compilation_cache_dir", options.comp_cache)
@@ -168,7 +183,8 @@ if __name__ == '__main__':
         jax.config.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
 
     dpsidt, dt, args = make_dpsidt(options.num_sites, options.lsp, options.mass, options.coupling,
-                                   options.profile, mult=options.mult, nmax=options.truncate)
+                                   options.profile, mult=options.mult, nmax=options.truncate,
+                                   mesh=mesh)
     vinit = make_vinit(options.num_sites, options.config)
 
     if options.trace:
