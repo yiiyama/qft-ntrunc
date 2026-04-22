@@ -42,7 +42,7 @@ def get_wavenumbers(
 
 def get_rapidity(
     num_sites: int,
-    mu: float,
+    mlsp: float,
     wavenumber: Optional[ArrayLike] = None,
     with_wn: bool = False
 ) -> NDArray | tuple[NDArray, NDArray]:
@@ -53,13 +53,13 @@ def get_rapidity(
 
     .. math::
 
-        p_k = \mu \sin \left( \frac{2 \pi}{N} k \right).
+        p_k = \frac{1}{\alpha} \sin \left( \frac{2 \pi}{N} k \right).
 
     Rapidity :math:`w_k` is defined by
 
     .. math::
 
-        w_k = \sinh^{-1} \frac{p_k}{\mu}.
+        w_k = \sinh^{-1} \frac{p_k}{m}.
 
     Args:
         num_sites: Number of sites.
@@ -72,8 +72,7 @@ def get_rapidity(
     """
     if wavenumber is None:
         wavenumber = get_wavenumbers(num_sites)
-    gamma_beta = np.sin(2 * np.pi / num_sites * wavenumber) / mu
-    rapidity = np.arcsinh(gamma_beta)
+    rapidity = np.arcsinh(np.sin(2 * np.pi / num_sites * wavenumber) / mlsp)
 
     if with_wn:
         return rapidity, wavenumber
