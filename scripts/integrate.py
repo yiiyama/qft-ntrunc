@@ -1,5 +1,6 @@
 import os
 import sys
+import re
 from argparse import ArgumentParser
 from pathlib import Path
 import time
@@ -20,22 +21,32 @@ from qft_ntrunc.staggered_fermion_1d.schwinger import make_param_apply_h_args
 from qft_ntrunc.paulis import apply_h, apply_h_truncated
 
 
-def make_dpsidt(num_sites, lsp, mass, coupling, mult=1, nmax=None):
+def make_dpsidt(num_sites, lsp, mass, coupling, profile, mult=1, nmax=None):
     fock_ab = jw_annihilator_spo(num_sites)
     rapidity, wavenumber = get_rapidity(num_sites, mass * lsp, with_wn=True)
     phi = ab_to_phi_sparse(fock_ab, rapidity, wavenumber)
     xmasks, zmasks, coeffs, counts = make_param_apply_h_args(phi, lsp, mass)
 
-    # Run the simulation for 5 sigma duration, with 1 sigma = 1/Emax
-    sigma = 1. / (mass * np.cosh(rapidity[0]))
-    tmax = 5. * sigma
-    t0 = tmax * 0.5
+    if profile is None:
+        # Run the simulation for +-3 sigma duration, with 1 sigma = 1/Emax
+        sigma = 1. / (mass * np.cosh(rapidity[0]))
+        tmax = 6. * sigma
+        prof_fn = gaus
+        prof_args = (tmax, sigma)
+    else:
+        match = re.match(r'([a-z0-9]+)\(([0-9.]+)(?:, *([0-9.]+))?(?:, *([0-9.]+))?\)', profile)
+        prof_args = tuple(float(v) for v in match.groups()[1:] if v is not None)
+        tmax = prof_args[0]
+        prof_fn = profile_fns[match.group(1)]
+        logging.info('Using profile fn %s with args %s', match.group(1), prof_args)
+
     dt = tmax / 100
 
     @jax.jit
     def dpsidt(state, tm, args):
-        g2lsp = (coupling ** 2) * lsp * jnp.exp(-jnp.square((tm - t0) / sigma))
-        xmasks, zmasks, coeffs, counts = args
+        xmasks, zmasks, coeffs, counts, coupling_j = args[:5]
+        prof_args = args[5:]
+        g2lsp = coupling_j * prof_fn(tm, *prof_args)
         # Scale coeffs[1:] (electric terms)
         coeffs *= jnp.where(jnp.arange(xmasks.shape[0]) == 0, 1., g2lsp)[:, None]
         if nmax is None:
@@ -43,7 +54,39 @@ def make_dpsidt(num_sites, lsp, mass, coupling, mult=1, nmax=None):
         return -1.j * apply_h_truncated(state, xmasks, zmasks, coeffs, counts, 'fock_ab', nmax,
                                         mult=mult)
 
-    return dpsidt, dt, (xmasks, zmasks, coeffs, counts)
+    coupling_j = (coupling ** 2) * lsp
+    return dpsidt, dt, (xmasks, zmasks, coeffs, counts, coupling_j) + prof_args
+
+
+def gaus(t, tmax, sigma):
+    t0 = tmax * 0.5
+    return jnp.exp(-jnp.square((t - t0) / sigma))
+
+
+def turnon(t, tmax, sigma):
+    t0 = tmax * 0.5
+    return jax.lax.select(
+        t < t0,
+        jnp.exp(-jnp.square((t - t0) / sigma)),
+        1.
+    )
+
+
+profile_fns = {'gaus': gaus, 'turnon': turnon}
+
+
+def make_vinit(num_sites, config):
+    wavenumbers = get_wavenumbers(num_sites)
+    if config == 'collision':
+        # Give particle the highest positive momentum
+        init_a = wavenumbers.shape[0] - 1
+        # Give antiparticle the negative of that momentum
+        init_b = np.argwhere(wavenumbers == -wavenumbers[-1])[0][0]
+        init = (1 << init_a) + (1 << (num_sites // 2 + init_b))
+    elif config == 'vacuum':
+        init = 0
+
+    return jax.nn.one_hot(init, (2 ** num_sites), dtype=np.complex128)
 
 
 def profile_trace(dpsidt, dt, args, vinit, steps, trace_name):
@@ -78,16 +121,18 @@ def integrate_and_write(dpsidt, dt, args, vinit, steps, out):
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--num-sites', type=int, required=True)
+    parser.add_argument('--config', default='collision')
     parser.add_argument('--lsp', type=float, required=True)
     parser.add_argument('--mass', type=float, required=True)
     parser.add_argument('--coupling', type=float, required=True)
     parser.add_argument('--truncate', type=int, default=None)
+    parser.add_argument('--profile')
     parser.add_argument('--steps', type=int, default=100)
     parser.add_argument('--out', default='/data/iiyama/qft-ntrunk')
     parser.add_argument('--comp-cache')
     parser.add_argument('--mult', type=int, default=16)
     parser.add_argument('--gpu')
-    parser.add_argument('--profile')
+    parser.add_argument('--trace')
     options = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
@@ -102,25 +147,15 @@ if __name__ == '__main__':
         jax.config.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
 
     dpsidt, dt, args = make_dpsidt(options.num_sites, options.lsp, options.mass, options.coupling,
-                                   mult=options.mult, nmax=options.truncate)
+                                   options.profile, mult=options.mult, nmax=options.truncate)
+    vinit = make_vinit(options.num_sites, options.config)
 
-    # Make initial state vector
-    wavenumbers = get_wavenumbers(options.num_sites)
-    # Give particle the highest positive momentum
-    init_a = wavenumbers.shape[0] - 1
-    # Give antiparticle the negative of that momentum
-    init_b = np.argwhere(wavenumbers == -wavenumbers[-1])[0][0]
-    init = (1 << init_a) + (1 << (options.num_sites // 2 + init_b))
-    # idx = np.searchsorted(indices, init)
-    # assert indices[idx] == init
-    # vinit = jax.nn.one_hot(idx, indices.shape[0], dtype=np.complex128)
-    vinit = jax.nn.one_hot(init, (2 ** options.num_sites), dtype=np.complex128)
-
-    if options.profile:
-        profile_trace(dpsidt, dt, args, vinit, options.steps, options.profile)
+    if options.trace:
+        profile_trace(dpsidt, dt, args, vinit, options.steps, options.trace)
         sys.exit(0)
 
-    filename = f'integrate_{options.num_sites}sites_a{options.lsp}_m{options.mass}_g{options.coupling}'
+    filename = f'integrate_{options.num_sites}sites_{options.config}'
+    filename += f'_a{options.lsp:.1f}_m{options.mass:.1f}_g{options.coupling:.1f}'
     if options.truncate:
         filename += f'_trunc{options.truncate}'
     filename += '.h5'
