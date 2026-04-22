@@ -34,11 +34,10 @@ def make_dpsidt(num_sites, lsp, mass, coupling, profile, mult=1, nmax=None):
         prof_fn = gaus
         prof_args = (tmax, sigma)
     else:
-        match = re.match(r'([a-z0-9]+)\(([0-9.]+)(?:, *([0-9.]+))?(?:, *([0-9.]+))?\)', profile)
-        prof_args = tuple(float(v) for v in match.groups()[1:] if v is not None)
+        name, prof_args = parse_profile(profile)
         tmax = prof_args[0]
-        prof_fn = profile_fns[match.group(1)]
-        logging.info('Using profile fn %s with args %s', match.group(1), prof_args)
+        prof_fn = profile_fns[name]
+        logging.info('Using profile fn %s with args %s', name, prof_args)
 
     dt = tmax / 100
 
@@ -58,6 +57,12 @@ def make_dpsidt(num_sites, lsp, mass, coupling, profile, mult=1, nmax=None):
     return dpsidt, dt, (xmasks, zmasks, coeffs, counts, coupling_j) + prof_args
 
 
+def parse_profile(profile):
+    match = re.match(r'([a-z0-9]+)\(([0-9.]+)(?:, *([0-9.]+))?(?:, *([0-9.]+))?\)', profile)
+    args = tuple(float(v) for v in match.groups()[1:] if v is not None)
+    return match.group(1), args
+
+
 def gaus(t, tmax, sigma):
     t0 = tmax * 0.5
     return jnp.exp(-jnp.square((t - t0) / sigma))
@@ -72,7 +77,13 @@ def turnon(t, tmax, sigma):
     )
 
 
-profile_fns = {'gaus': gaus, 'turnon': turnon}
+def erf(t, tmax, sigma):
+    t0 = tmax * 0.25
+    exponent = (t - t0) / sigma / np.sqrt(2.)
+    return 0.5 + 0.5 * jax.scipy.special.erf(exponent)
+
+
+profile_fns = {'gaus': gaus, 'turnon': turnon, 'erf': erf}
 
 
 def make_vinit(num_sites, config):
@@ -155,6 +166,9 @@ if __name__ == '__main__':
         sys.exit(0)
 
     filename = f'integrate_{options.num_sites}sites_{options.config}'
+    if options.profile:
+        prof_name, prof_args = parse_profile(options.profile)
+        filename += f'_{prof_name}_' + '_'.join(f'{v:.1f}' for v in prof_args)
     filename += f'_a{options.lsp:.1f}_m{options.mass:.1f}_g{options.coupling:.1f}'
     if options.truncate:
         filename += f'_trunc{options.truncate}'
