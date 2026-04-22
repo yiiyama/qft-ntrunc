@@ -4,12 +4,14 @@ import numpy as np
 from numpy.typing import NDArray
 import jax
 import jax.numpy as jnp
+from jax.sharding import PartitionSpec as P, NamedSharding, Mesh
 from qiskit.quantum_info import SparsePauliOp
 
 
 def make_apply_h_args(
     hamiltonian: SparsePauliOp,
-    width: Optional[int] = None
+    width: Optional[int] = None,
+    mesh: Optional[Mesh] = None
 ) -> tuple[NDArray, NDArray, NDArray, NDArray]:
     xuniq, indices, counts = np.unique(hamiltonian.paulis.x, axis=0, return_inverse=True,
                                        return_counts=True)
@@ -32,6 +34,19 @@ def make_apply_h_args(
         # Will multiply the entire op by (-i)^{n_zx}
         phases = np.array([1., -1.j, -1., 1.j])[np.bitwise_count(xmask & zm) % 4]
         coeffs[ipat, :counts[ipat]] = hamiltonian.coeffs[ipaulis] * phases
+
+    if mesh:
+        pad_len = mesh.shape['x'] - xmasks.shape[0] % mesh.shape['x']
+        if pad_len:
+            xmasks = np.pad(xmasks, [(0, pad_len)])
+            zmasks = np.pad(zmasks, [(0, pad_len), (0, 0)])
+            coeffs = np.pad(coeffs, [(0, pad_len), (0, 0)])
+            counts = np.pad(counts, [(0, pad_len)])
+        sharding = NamedSharding(mesh, P('x'))
+        xmasks = jax.device_put(xmasks, sharding)
+        zmasks = jax.device_put(zmasks, sharding)
+        coeffs = jax.device_put(coeffs, sharding)
+        counts = jax.device_put(counts, sharding)
 
     return xmasks, zmasks, coeffs, counts
 
@@ -66,11 +81,19 @@ def apply_h(state, xmasks, zmasks, coeffs, counts, mult=1):
             (0, jnp.zeros_like(xstate))
         )[1]
 
-    return jax.lax.fori_loop(
+    result = jnp.zeros_like(state)
+    if (sharded := jax.typeof(xmasks).sharding.num_devices != 0):
+        result = jax.lax.pcast(result, 'x', to='varying')
+
+    result = jax.lax.fori_loop(
         0, xmasks.shape[0],
         lambda i, r: r + apply_pauli(xmasks[i], zmasks[i], coeffs[i], counts[i]),
-        jnp.zeros_like(state)
+        result
     )
+
+    if sharded:
+        return jax.lax.psum(result, 'x')
+    return result
 
 
 @partial(jax.jit, static_argnames=['mult', 'basis'])
