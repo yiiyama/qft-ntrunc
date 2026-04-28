@@ -40,11 +40,11 @@ def make_dpsidt(num_sites, lsp, mass, coupling_g, profile, mult=1, nmax=None, me
         # Run the simulation for +-3 sigma duration, with 1 sigma = 1/Emax
         sigma = 1. / (mass * np.cosh(rapidity[0]))
         tmax = 6. * sigma
-        prof_fn = gaus(tmax, sigma)
+        prof_fn = profile_fn('erfsymm', (tmax, sigma))
     else:
         name, prof_args = parse_profile(profile)
         tmax = prof_args[0]
-        prof_fn = profile_fns[name](*prof_args)
+        prof_fn = profile_fn(name, prof_args)
         logging.info('Using profile fn %s with args %s', name, prof_args)
 
     dt = tmax / 100
@@ -76,49 +76,46 @@ def parse_profile(profile):
     return match.group(1), args
 
 
-def gaus(tmax, sigma):
-    def fn(t):
-        t0 = tmax * 0.5
-        return jnp.exp(-jnp.square((t - t0) / sigma))
+def profile_fn(name, args):
+    if name == 'gaus':
+        tmax, sigma = args
+
+        def fn(t):
+            t0 = tmax * 0.5
+            return jnp.exp(-jnp.square((t - t0) / sigma))
+
+    elif name == 'turnon':
+        tmax, sigma = args
+
+        def fn(t):
+            t0 = tmax * 0.5
+            return jax.lax.select(
+                t < t0,
+                jnp.exp(-jnp.square((t - t0) / sigma)),
+                1.
+            )
+
+    elif name == 'erf':
+        tmax, sigma = args
+
+        def fn(t):
+            t0 = tmax * 0.25
+            exponent = (t - t0) / sigma / np.sqrt(2.)
+            return 0.5 + 0.5 * jax.scipy.special.erf(exponent)
+
+    elif name == 'erfsymm':
+        tmax, sigma = args
+
+        def fn(t):
+            t0 = tmax * 0.25
+            tcent = tmax * 0.5
+            right = jnp.asarray(t > tcent, dtype=np.float64)
+            sign = 1. - 2. * right
+            offset = tcent * right
+            exponent = (t - t0 - offset) * sign / sigma / np.sqrt(2.)
+            return 0.5 + 0.5 * jax.scipy.special.erf(exponent)
 
     return fn
-
-
-def turnon(tmax, sigma):
-    def fn(t):
-        t0 = tmax * 0.5
-        return jax.lax.select(
-            t < t0,
-            jnp.exp(-jnp.square((t - t0) / sigma)),
-            1.
-        )
-
-    return fn
-
-
-def erf(tmax, sigma):
-    def fn(t):
-        t0 = tmax * 0.25
-        exponent = (t - t0) / sigma / np.sqrt(2.)
-        return 0.5 + 0.5 * jax.scipy.special.erf(exponent)
-
-    return fn
-
-
-def erfsymm(tmax, sigma):
-    def fn(t):
-        t0 = tmax * 0.25
-        tcent = tmax * 0.5
-        right = jnp.asarray(t > tcent, dtype=np.float64)
-        sign = 1. - 2. * right
-        offset = tcent * right
-        exponent = (t - t0 - offset) * sign / sigma / np.sqrt(2.)
-        return 0.5 + 0.5 * jax.scipy.special.erf(exponent)
-
-    return fn
-
-
-profile_fns = {'gaus': gaus, 'turnon': turnon, 'erf': erf}
 
 
 def make_vinit(num_sites, config):
@@ -218,5 +215,8 @@ if __name__ == '__main__':
     except FileExistsError:
         pass
 
-    with h5py.File(Path(options.out) / filename, 'w', libver='latest') as out:
+    path = Path(options.out) / filename
+    with h5py.File(path, 'w', libver='latest') as out:
         integrate_and_write(dpsidt, dt, args, vinit, options.steps, out)
+
+    logging.info('Output at %s', path)
